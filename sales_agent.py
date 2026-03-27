@@ -4,12 +4,17 @@ import json
 import base64
 import re
 from datetime import datetime
+import os
+from dotenv import load_dotenv
 
-# Configuration from blueprint metadata
-WHATSAPP_TOKEN = ""
-GROQ_API_KEY = ""
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-SHEET_ID = ""
+# Load environment variables from .env file
+load_dotenv()
+
+# Configuration from environment variables
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_URL = os.getenv("GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
+SHEET_ID = os.getenv("SHEET_ID", "")
 
 # Cell 2: Define Functions for Modules
 
