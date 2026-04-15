@@ -5,15 +5,15 @@ from datetime import datetime
 from enum import Enum
 
 
-class TenantStatus(Enum):
+class OperatorStatus(Enum):
     ACTIVE = "active"
     DISCONNECTED = "disconnected"
     SUSPENDED = "suspended"
 
 
 @dataclass
-class Tenant:
-    tenant_id: str
+class Operator:
+    operator_id: str
     shop_name: str
     owner_name: str
     owner_personal_phone: str
@@ -24,5 +24,5 @@ class Tenant:
     google_sheets_id: str
     luganda_canned_response: str
     llm_model: str
-    status: TenantStatus
+    status: OperatorStatus
     created_at: datetime

@@ -21,7 +21,7 @@ CHECK THESE IN ORDER:
 
 3. PER-USER SERIALISATION
    If the proposal involves the queue or worker: does it enforce that the
-   same (tenant_id, phone) pair is never processed concurrently?
+   same (operator_id, phone) pair is never processed concurrently?
    Missing lock: no-go.
 
 4. SECURITY

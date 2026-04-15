@@ -14,7 +14,7 @@ class Stage(Enum):
 
 @dataclass
 class Session:
-    tenant_id: str
+    operator_id: str
     phone: str
     name: str | None
     language: str | None

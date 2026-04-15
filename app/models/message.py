@@ -16,4 +16,4 @@ class InboundMessage:
     chat_id: str
     timestamp: int
     channel_id: str
-    tenant_id: str
+    operator_id: str

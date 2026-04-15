@@ -16,19 +16,19 @@ message forwarded to customer from shop number → operator resumes bot.
   Phases 1-4 complete and passing.
   Two WhatsApp numbers available for testing:
     Number A: the shop number (connected to Whapi)
-    Number B: the operator's personal number (OWNER_PERSONAL_PHONE in tenant)
+    Number B: the operator's personal number (OWNER_PERSONAL_PHONE in operator)
   Test a handoff by sending a strong buying signal to Number A from a
   third number (or a friend's phone).
 
 ## What to build
 
 ### 1. app/engine/handoff.py (full implementation)
-  async trigger(session, summary, tenant, messaging, triggering_message):
+  async trigger(session, summary, operator, messaging, triggering_message):
 
   a. Update session: stage=HANDED_OFF, handed_off_at=now(),
      active_handoff_phone=session.phone
   b. Persist session immediately
-  c. Send notification to tenant.owner_personal_phone:
+  c. Send notification to operator.owner_personal_phone:
 
      "Ready to close:
       Customer: {session.name or session.phone}
@@ -43,22 +43,22 @@ message forwarded to customer from shop number → operator resumes bot.
 
   CONCURRENT HANDOFF EDGE CASE — must be implemented:
     When trigger() is called and session.active_handoff_phone is already set
-    for another session belonging to this tenant:
+    for another session belonging to this operator:
       Log warning: concurrent_handoff_attempt
       Send notification to operator (they can see both)
       Set new session.stage = HANDED_OFF
-      Do NOT overwrite existing active_handoff_phone on tenant
+      Do NOT overwrite existing active_handoff_phone on operator
       Operator must clear existing relay before new one activates
 
 ### 2. app/webhook/owner_action_handler.py (full implementation)
 
-  handle(payload, tenant):
+  handle(payload, operator):
     sender = normalise(payload from)
     text = payload message text (lowercased, stripped)
 
-    CASE 1: sender == tenant.owner_personal_phone (control thread)
+    CASE 1: sender == operator.owner_personal_phone (control thread)
       If text == "resume" or text.startswith("resume "):
-        Find session in HANDED_OFF stage for this tenant
+        Find session in HANDED_OFF stage for this operator
         If specific phone in command: use that session
         If not: use session with active_handoff_phone set
         If none found: send "No active handoff." to operator. Return.
@@ -70,14 +70,14 @@ message forwarded to customer from shop number → operator resumes bot.
           After 10 min or on "done" signal: bot resumes
 
       Elif text == "handled":
-        Find HANDED_OFF session for this tenant
+        Find HANDED_OFF session for this operator
         Set session.stage = OWNER_ACTIVE
         Clear session.active_handoff_phone
         Persist session
         Reply to operator: "Got it. Bot suppressed for that conversation."
 
       Else (unrecognised text, relay mode):
-        Find session with active_handoff_phone set for this tenant
+        Find session with active_handoff_phone set for this operator
         If found:
           Forward operator's message to active_handoff_phone via messaging
           Append to session.history as role='assistant'
@@ -88,7 +88,7 @@ message forwarded to customer from shop number → operator resumes bot.
 
     CASE 2: from_me == true in a customer chat (operator typed in customer thread)
       Extract customer phone from chat_id
-      Find session for (tenant_id, customer_phone)
+      Find session for (operator_id, customer_phone)
       If found: set session.stage = OWNER_ACTIVE. Persist. Log.
 
 ### 3. Holding message logic (in pipeline/runner.py)
@@ -109,23 +109,23 @@ message forwarded to customer from shop number → operator resumes bot.
 
 ### 5. Background health monitor (app/main.py extension)
   asyncio task, runs every WHAPI_HEALTH_CHECK_INTERVAL_S seconds.
-  For each active tenant:
+  For each active operator:
     GET https://gate.whapi.cloud/health?token={decrypted_channel_token}
     If response does not indicate CONNECTED:
-      If tenant.status != DISCONNECTED:
-        Call session_disconnect_handler.handle_disconnect(tenant)
+      If operator.status != DISCONNECTED:
+        Call session_disconnect_handler.handle_disconnect(operator)
 
 ### 6. session_disconnect_handler.py (complete)
-  handle_disconnect(tenant):
-    Update tenant.status = DISCONNECTED via tenant adapter
-    Send alert to tenant.owner_personal_phone:
+  handle_disconnect(operator):
+    Update operator.status = DISCONNECTED via operator adapter
+    Send alert to operator.owner_personal_phone:
       "Your Salelular bot has disconnected from WhatsApp.
        Open WhatsApp > Linked Devices to reconnect,
        or contact support."
     Log session_disconnect event
 
-  handle_reconnect(tenant):
-    Update tenant.status = ACTIVE
+  handle_reconnect(operator):
+    Update operator.status = ACTIVE
     Send to operator: "Your Salelular bot is back online."
     Log session_reconnect event
 

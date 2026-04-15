@@ -12,9 +12,9 @@ from datetime import datetime
 
 from app.config import validate
 from app.adapters.storage.sqlite_adapter import SqliteStorageAdapter
-from app.adapters.tenant.sqlite_adapter import SqliteTenantAdapter
+from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
 from app.models.session import Session, Stage
-from app.models.tenant import Tenant, TenantStatus
+from app.models.operator import Operator, OperatorStatus
 from app.utils.crypto import decrypt, encrypt
 from app.utils.log import log
 from app.utils.phone import hash_for_log, normalise
@@ -71,7 +71,7 @@ def main():
 
     # --- Logging ---
     print("\n[4] Testing structured logger...")
-    log("test_event", tenant_id="t-001", phone_hash=phone_hash, count=42)
+    log("test_event", operator_id="op-001", phone_hash=phone_hash, count=42)
     print("    (see JSON line above)")
     print("    PASS")
 
@@ -83,7 +83,7 @@ def main():
 
         now = datetime.utcnow()
         session = Session(
-            tenant_id="t-001",
+            operator_id="op-001",
             phone="+256700123456",
             name="Test Customer",
             language="en",
@@ -99,10 +99,10 @@ def main():
             created_at=now,
         )
 
-        storage.set("t-001", "+256700123456", session)
-        retrieved = storage.get("t-001", "+256700123456")
+        storage.set("op-001", "+256700123456", session)
+        retrieved = storage.get("op-001", "+256700123456")
         assert retrieved is not None, "Session not found after save"
-        assert retrieved.tenant_id == session.tenant_id
+        assert retrieved.operator_id == session.operator_id
         assert retrieved.phone == session.phone
         assert retrieved.name == session.name
         assert retrieved.stage == Stage.EXPLORING
@@ -110,20 +110,20 @@ def main():
         assert retrieved.shown_product_ids == ["prod-1"]
         print(f"    Saved and retrieved session for {hash_for_log(session.phone)}")
 
-        storage.delete("t-001", "+256700123456")
-        assert storage.get("t-001", "+256700123456") is None
+        storage.delete("op-001", "+256700123456")
+        assert storage.get("op-001", "+256700123456") is None
         print("    Delete verified")
         print("    PASS")
 
-    # --- SQLite tenant adapter ---
-    print("\n[6] Testing tenant adapter (with encryption)...")
+    # --- SQLite operator adapter ---
+    print("\n[6] Testing operator adapter (with encryption)...")
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
-        tenants = SqliteTenantAdapter(db_path, cfg.encryption_key)
+        operators = SqliteOperatorAdapter(db_path, cfg.encryption_key)
 
         now = datetime.utcnow()
-        tenant = Tenant(
-            tenant_id="t-001",
+        operator = Operator(
+            operator_id="op-001",
             shop_name="Kampala Shoes",
             owner_name="Ivan",
             owner_personal_phone="+256700999999",
@@ -134,27 +134,27 @@ def main():
             google_sheets_id="sheet-id-123",
             luganda_canned_response="Webale okutuukirira!",
             llm_model="gpt-4o",
-            status=TenantStatus.ACTIVE,
+            status=OperatorStatus.ACTIVE,
             created_at=now,
         )
 
-        tenants.save(tenant)
-        retrieved = tenants.get_by_channel_id("CHAN-XXXXX")
-        assert retrieved is not None, "Tenant not found after save"
-        assert retrieved.tenant_id == "t-001"
+        operators.save(operator)
+        retrieved = operators.get_by_channel_id("CHAN-XXXXX")
+        assert retrieved is not None, "Operator not found after save"
+        assert retrieved.operator_id == "op-001"
         assert retrieved.shop_name == "Kampala Shoes"
         assert retrieved.whapi_channel_token == "secret-channel-token-123"
         assert retrieved.whapi_webhook_secret == "secret-webhook-abc"
-        assert retrieved.status == TenantStatus.ACTIVE
-        print(f"    Saved and retrieved tenant: {retrieved.shop_name}")
+        assert retrieved.status == OperatorStatus.ACTIVE
+        print(f"    Saved and retrieved operator: {retrieved.shop_name}")
         print(f"    Channel token decrypted correctly: {retrieved.whapi_channel_token[:10]}...")
 
-        active = tenants.get_all_active()
+        active = operators.get_all_active()
         assert len(active) == 1
-        print(f"    get_all_active: {len(active)} tenant(s)")
+        print(f"    get_all_active: {len(active)} operator(s)")
 
-        tenants.update_status("t-001", TenantStatus.DISCONNECTED)
-        active_after = tenants.get_all_active()
+        operators.update_status("op-001", OperatorStatus.DISCONNECTED)
+        active_after = operators.get_all_active()
         assert len(active_after) == 0
         print("    update_status to DISCONNECTED verified")
         print("    PASS")

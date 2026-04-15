@@ -8,3 +8,6 @@ fastapi
 uvicorn[standard]
 httpx
 cryptography>=43.0.0,<44
+google-auth
+google-api-python-client
+rapidfuzz

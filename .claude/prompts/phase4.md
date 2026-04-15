@@ -85,7 +85,7 @@ This is the moment the system feels real.
   Returns unified_text.
 
 ### 11. app/engine/system_prompt.py
-  build(tenant: Tenant, session: Session, unified_text: str,
+  build(operator: Operator, session: Session, unified_text: str,
         products_shown_names: list[str]) -> str
   Returns the full system prompt string per S10 template.
   Wraps unified_text in === CUSTOMER MESSAGE === delimiters.
@@ -100,11 +100,11 @@ This is the moment the system feels real.
   Tool handlers:
     handle_search_products(query, session, inventory) -> list[Product]
     handle_update_session(fields, session, storage) -> None
-    handle_trigger_handoff(summary, session, tenant, messaging, triggering_msg)
+    handle_trigger_handoff(summary, session, operator, messaging, triggering_msg)
       -> None  (stub in Phase 4 — full implementation in Phase 5)
 
 ### 13. app/engine/conversation.py
-  async run(tenant, session, unified_text, adapters) -> (str, list[Product])
+  async run(operator, session, unified_text, adapters) -> (str, list[Product])
   Builds system prompt via system_prompt.py.
   Assembles messages list from session.history.
   Calls LLM with tool definitions.
@@ -119,23 +119,23 @@ This is the moment the system feels real.
   Call update_session to save session after each turn.
 
 ### 14. app/pipeline/response_builder.py
-  async send_response(phone, reply_text, products, tenant, messaging):
+  async send_response(phone, reply_text, products, operator, messaging):
   Split reply if > 1500 chars at "\n\n" boundary.
   Send each chunk via messaging.send_text (typing_time=2).
   Send each product image (max 3) via messaging.send_image.
   Caption: "{name}\n{price}\n{description}".
 
 ### 15. app/pipeline/runner.py (replace Phase 3 stub)
-  async run(payloads, tenant):
+  async run(payloads, operator):
     unified = await input.processor.process(payloads, vision, inventory)
     language = input.language.classify(unified, ...)
     if language in ("LUGANDA", "UNKNOWN"):
       send canned response + alert operator + return
-    session = storage.get(tenant.tenant_id, sender_phone) or Session(...)
+    session = storage.get(operator.operator_id, sender_phone) or Session(...)
     reply_text, products = await engine.conversation.run(
-      tenant, session, unified, adapters)
+      operator, session, unified, adapters)
     await response_builder.send_response(
-      sender_phone, reply_text, products, tenant, messaging)
+      sender_phone, reply_text, products, operator, messaging)
 
 ## Success criteria
 

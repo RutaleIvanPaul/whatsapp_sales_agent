@@ -13,7 +13,7 @@ ALWAYS CHECK:
    Any use of == for secret comparison: critical issue.
 
 2. ENCRYPTION AT REST
-   Any field listed as "ENCRYPTED at rest" in SPEC.md S3 (Tenant model)
+   Any field listed as "ENCRYPTED at rest" in SPEC.md S3 (Operator model)
    must be stored via utils/crypto.py encrypt().
    Any plain-text storage of whapi_channel_token or whapi_webhook_secret:
    critical issue.

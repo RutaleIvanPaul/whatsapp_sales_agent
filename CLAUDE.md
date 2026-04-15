@@ -21,8 +21,8 @@ Read only the section you need. Never load the entire file at once.
 
 ## Current phase
 
-PHASE 1 — Foundation
-Read .claude/prompts/phase1.md before doing anything else.
+PHASE 2 — Inventory
+Read .claude/prompts/phase2.md before doing anything else.
 Update this line when advancing phases.
 
 ---
@@ -31,12 +31,12 @@ Update this line when advancing phases.
 
 - Python 3.11+
 - FastAPI + uvicorn
-- Whapi.cloud — linked-device WhatsApp gateway (hosted, per-tenant tokens)
+- Whapi.cloud — linked-device WhatsApp gateway (hosted, per-operator tokens)
 - Google Sheets API — inventory source, read-only, single service account
 - OpenAI GPT-4o — conversation engine and vision (same API key)
 - OpenAI GPT-4o-mini — language classifier (same API key, cheaper model)
 - RapidFuzz — in-memory fuzzy product search
-- SQLite — session and tenant storage for MVP
+- SQLite — session and operator storage for MVP
 - asyncio.Queue — message queue for MVP
 
 ---
@@ -115,13 +115,13 @@ salelular/
 │   │   │   ├── base.py
 │   │   │   ├── sqlite_adapter.py
 │   │   │   └── redis_adapter.py
-│   │   └── tenant/
+│   │   └── operator/
 │   │       ├── base.py
 │   │       ├── sqlite_adapter.py
 │   │       └── factory.py
 │   ├── models/
 │   │   ├── __init__.py
-│   │   ├── tenant.py
+│   │   ├── operator.py
 │   │   ├── session.py
 │   │   ├── product.py
 │   │   └── message.py
@@ -135,7 +135,7 @@ salelular/
 │   ├── integration/
 │   └── fixtures/
 ├── scripts/
-│   ├── onboard_tenant.py
+│   ├── onboard_operator.py
 │   ├── test_search.py
 │   └── check_session.py
 ├── .env
@@ -157,15 +157,15 @@ ARCHITECTURE
 2. Every external dependency behind a swappable adapter. Business logic
    only imports from base classes or factories — never from implementation
    files (openai_adapter.py, whapi.py, sqlite_adapter.py) directly.
-3. Messaging adapter always receives tenant context. No global WhatsApp
-   token. Per-tenant channel token on every outbound send.
+3. Messaging adapter always receives operator context. No global WhatsApp
+   token. Per-operator channel token on every outbound send.
 4. Webhook receiver returns 200 OK within 5 seconds. All pipeline
    processing is async after the 200 via the queue.
-5. Same (tenant_id, phone) pair never processed concurrently.
+5. Same (operator_id, phone) pair never processed concurrently.
    Per-user asyncio.Lock in the queue worker.
 
 SECURITY
-6. Sensitive tenant fields (whapi_channel_token, whapi_webhook_secret)
+6. Sensitive operator fields (whapi_channel_token, whapi_webhook_secret)
    encrypted at rest using AES-256-GCM via utils/crypto.py. Never plain text.
 7. Webhook token comparison always uses hmac.compare_digest(). Never ==.
 8. Customer phone numbers never logged plain text. Always
@@ -197,22 +197,22 @@ class VisionAdapter(ABC):
     def describe(self, image_url: str) -> str
 
 class MessagingAdapter(ABC):
-    def send_text(self, phone: str, text: str, tenant: Tenant) -> None
-    def send_image(self, phone: str, image_url: str, caption: str, tenant: Tenant) -> None
+    def send_text(self, phone: str, text: str, operator: Operator) -> None
+    def send_image(self, phone: str, image_url: str, caption: str, operator: Operator) -> None
 
 class InventoryAdapter(ABC):
     def search(self, query: str, shown_ids: list[str]) -> list[Product]
     def get_all(self) -> list[Product]
 
 class StorageAdapter(ABC):
-    def get(self, tenant_id: str, phone: str) -> Session | None
-    def set(self, tenant_id: str, phone: str, session: Session) -> None
-    def delete(self, tenant_id: str, phone: str) -> None
+    def get(self, operator_id: str, phone: str) -> Session | None
+    def set(self, operator_id: str, phone: str, session: Session) -> None
+    def delete(self, operator_id: str, phone: str) -> None
 
-class TenantAdapter(ABC):
-    def get_by_channel_id(self, channel_id: str) -> Tenant | None
-    def get_all_active(self) -> list[Tenant]
-    def update_status(self, tenant_id: str, status: TenantStatus) -> None
+class OperatorAdapter(ABC):
+    def get_by_channel_id(self, channel_id: str) -> Operator | None
+    def get_all_active(self) -> list[Operator]
+    def update_status(self, operator_id: str, status: OperatorStatus) -> None
 
 ---
 
@@ -236,7 +236,7 @@ OWNER_ACTIVE = 'owner_active'  operator typing directly in customer thread
 ## Whapi key facts
 
 Webhook auth: custom header X-Salelular-Token compared via hmac.compare_digest()
-channel_id in payload: identifies which tenant
+channel_id in payload: identifies which operator
 from_me: true: operator typed from phone → owner_action_handler
 from_me: false: customer message → pipeline
 chat_id ending @g.us: group message → discard
