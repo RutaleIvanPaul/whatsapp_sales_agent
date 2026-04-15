@@ -13,37 +13,37 @@ class SqliteStorageAdapter(StorageAdapter):
         self._conn = sqlite3.connect(db_path)
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS sessions (
-                tenant_id  TEXT NOT NULL,
+                operator_id  TEXT NOT NULL,
                 phone      TEXT NOT NULL,
                 data       TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (tenant_id, phone)
+                PRIMARY KEY (operator_id, phone)
             )"""
         )
         self._conn.commit()
 
-    def get(self, tenant_id: str, phone: str) -> Session | None:
+    def get(self, operator_id: str, phone: str) -> Session | None:
         row = self._conn.execute(
-            "SELECT data FROM sessions WHERE tenant_id=? AND phone=?",
-            (tenant_id, phone),
+            "SELECT data FROM sessions WHERE operator_id=? AND phone=?",
+            (operator_id, phone),
         ).fetchone()
         if row is None:
             return None
         return _deserialise_session(json.loads(row[0]))
 
-    def set(self, tenant_id: str, phone: str, session: Session) -> None:
+    def set(self, operator_id: str, phone: str, session: Session) -> None:
         now = datetime.utcnow().isoformat()
         data = _serialise_session(session)
         self._conn.execute(
-            "INSERT OR REPLACE INTO sessions (tenant_id, phone, data, updated_at) VALUES (?,?,?,?)",
-            (tenant_id, phone, json.dumps(data), now),
+            "INSERT OR REPLACE INTO sessions (operator_id, phone, data, updated_at) VALUES (?,?,?,?)",
+            (operator_id, phone, json.dumps(data), now),
         )
         self._conn.commit()
 
-    def delete(self, tenant_id: str, phone: str) -> None:
+    def delete(self, operator_id: str, phone: str) -> None:
         self._conn.execute(
-            "DELETE FROM sessions WHERE tenant_id=? AND phone=?",
-            (tenant_id, phone),
+            "DELETE FROM sessions WHERE operator_id=? AND phone=?",
+            (operator_id, phone),
         )
         self._conn.commit()
 

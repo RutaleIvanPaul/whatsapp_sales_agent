@@ -24,18 +24,18 @@ comes in Phase 4 with the conversation engine.
   ngrok running: ngrok http 8000
   Whapi channel webhook URL updated to ngrok HTTPS URL + /webhook
   Additional env vars needed:
-    WEBHOOK_SECRET is set per-tenant in DB.
-    For Phase 3 single-tenant test: manually insert a tenant record
-    using scripts/check_session.py extended to also create a test tenant.
+    WEBHOOK_SECRET is set per-operator in DB.
+    For Phase 3 single-operator test: manually insert an operator record
+    using scripts/check_session.py extended to also create a test operator.
 
 ## What to build
 
 ### 1. app/utils/contacts.py
   ContactsCache class.
-  Per-tenant set of phone numbers loaded from Whapi GET /contacts.
-  is_contact(tenant_id, phone) -> bool
-  async load_for_tenant(tenant) -> None
-  async start_refresh(tenants, interval_s=3600) -> None (hourly background task)
+  Per-operator set of phone numbers loaded from Whapi GET /contacts.
+  is_contact(operator_id, phone) -> bool
+  async load_for_operator(operator) -> None
+  async start_refresh(operators, interval_s=3600) -> None (hourly background task)
   On Whapi API failure: log warning, serve stale cache.
 
 ### 2. app/adapters/messaging/base.py
@@ -45,42 +45,42 @@ comes in Phase 4 with the conversation engine.
   WhapiMessagingAdapter implements MessagingAdapter.
   send_text: POST /messages/text with typing_time=2
   send_image: POST /messages/image
-  Both: decrypt(tenant.whapi_channel_token) per call.
+  Both: decrypt(operator.whapi_channel_token) per call.
   Both: 3-attempt retry with 1s, 2s backoff.
   On final failure: log send_failed event, send alert to operator personal phone.
     (Alert send has no retry — if it fails, log and stop.)
   Use httpx.AsyncClient.
 
 ### 4. app/buffer/buffer.py
-  MessageBuffer class (per-tenant-user).
-  Keys: (tenant_id, phone).
+  MessageBuffer class (per-operator-user).
+  Keys: (operator_id, phone).
   Stores raw Whapi payload dicts.
-  add(tenant_id, phone, payload, on_flush_callback)
-  handle_deletion(tenant_id, phone, message_id)
+  add(operator_id, phone, payload, on_flush_callback)
+  handle_deletion(operator_id, phone, message_id)
   Debounce: asyncio task, 3 seconds, cancelled and restarted on each add.
   Force-flush at 10 messages.
   Rate limit: track last_flush_time per user, delay flush if < 8 seconds.
-  on_flush: call the callback with (tenant_id, phone, payloads).
+  on_flush: call the callback with (operator_id, phone, payloads).
 
 ### 5. app/queue/queue.py + app/queue/worker.py
   queue.py: module-level asyncio.Queue instance.
   worker.py: consumes queue in continuous loop.
-    Per-user asyncio.Lock (dict keyed by (tenant_id, phone)).
+    Per-user asyncio.Lock (dict keyed by (operator_id, phone)).
     Deduplication: _seen dict, message_id → timestamp, TTL 600s.
     On consume: check dedup → add to buffer → (buffer handles timer and flush).
 
 ### 6. app/webhook/session_disconnect_handler.py
-  handle_disconnect(tenant, channel_id):
-    Update tenant.status = DISCONNECTED via tenant adapter.
-    Send alert to tenant.owner_personal_phone via messaging adapter.
+  handle_disconnect(operator, channel_id):
+    Update operator.status = DISCONNECTED via operator adapter.
+    Send alert to operator.owner_personal_phone via messaging adapter.
     Log session_disconnect event.
-  handle_reconnect(tenant):
-    Update tenant.status = ACTIVE.
+  handle_reconnect(operator):
+    Update operator.status = ACTIVE.
     Send confirmation to operator.
     Log session_reconnect event.
 
 ### 7. app/webhook/owner_action_handler.py
-  handle(payload, tenant):
+  handle(payload, operator):
     Stub for Phase 3 — log that owner action received, do nothing else.
     Full implementation in Phase 5.
 
@@ -98,7 +98,7 @@ comes in Phase 4 with the conversation engine.
   Full startup sequence for Phase 3:
     config.validate()
     crypto.init()
-    tenant_adapter + storage_adapter connected
+    operator_adapter + storage_adapter connected
     contacts_cache loaded and refresh started
     inventory loaded (from Phase 2) and refresh started
     messaging_adapter initialised

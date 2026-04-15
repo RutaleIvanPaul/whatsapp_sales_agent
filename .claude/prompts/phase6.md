@@ -15,8 +15,8 @@ Operator onboarding is scriptable.
 ## What to build
 
 ### 1. Per-user daily message cap (app/buffer/buffer.py or app/pipeline/runner.py)
-  Track message count per (tenant_id, phone) per calendar day (UTC).
-  Use a simple in-memory dict: { (tenant_id, phone, date): count }
+  Track message count per (operator_id, phone) per calendar day (UTC).
+  Use a simple in-memory dict: { (operator_id, phone, date): count }
   When count exceeds MAX_MESSAGES_PER_USER_DAY:
     Send to customer: "Thank you for your interest! Please reach out again
                        tomorrow or contact us directly."
@@ -54,7 +54,7 @@ Operator onboarding is scriptable.
 
 ### 6. Cost tracking log (app/utils/logging.py extension)
   asyncio task that fires at midnight UTC daily.
-  Logs: llm_cost_summary event with per-tenant:
+  Logs: llm_cost_summary event with per-operator:
     total input_tokens, total output_tokens, vision_calls, estimated_cost_usd.
   Track cumulative tokens in memory (reset at midnight).
   Estimated cost calculated from known OpenAI rates for configured models.
@@ -70,7 +70,7 @@ Operator onboarding is scriptable.
   Exit with descriptive error message listing ALL missing/invalid vars at once
   (not just the first one found).
 
-### 8. scripts/onboard_tenant.py
+### 8. scripts/onboard_operator.py
   Interactive CLI script for adding a new operator.
   Prompts for: shop_name, owner_name, owner_personal_phone, google_sheets_id,
                luganda_canned_response.
@@ -78,12 +78,12 @@ Operator onboarding is scriptable.
     Generate 32-byte webhook secret
     Create Whapi channel via Partner API
     Configure channel (webhook, events, auto_download, secret header)
-    Insert tenant record into DB (encrypt sensitive fields)
+    Insert operator record into DB (encrypt sensitive fields)
     Print QR code URL for operator to scan
     Wait for users.post webhook or prompt user to confirm scan manually
     Load inventory from Google Sheet
     Print product count
-    Print "Tenant {shop_name} is live."
+    Print "Operator {shop_name} is live."
 
 ### 9. Edge case verification
   Write integration tests or manual test scripts for:
@@ -101,7 +101,7 @@ Operator onboarding is scriptable.
 
 Phase 6 passes when:
   1. All items in S18 edge case table are verified (manually or by test)
-  2. python scripts/onboard_tenant.py completes without errors
+  2. python scripts/onboard_operator.py completes without errors
   3. Daily cost summary logs at midnight (or on demand via test)
   4. config.validate() catches and reports ALL missing env vars at once
   5. No uncaught exceptions under any tested bad input scenario

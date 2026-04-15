@@ -31,7 +31,7 @@ STEP 3 — CLASSIFY THE FAILURE
     Fix is in the system prompt or tool definitions, not in application code.
 
 STEP 4 — CHECK SESSION STATE
-  Request the session record for the affected (tenant_id, phone).
+  Request the session record for the affected (operator_id, phone).
   Check: stage, intent, shown_product_ids, history length, last_active.
   Session corruption often explains unexpected behaviour.
 

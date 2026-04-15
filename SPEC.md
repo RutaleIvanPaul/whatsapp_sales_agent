@@ -49,7 +49,7 @@ RUNTIME PIPELINE (read this to understand the full flow):
 
   Webhook receiver:
     Validate X-Salelular-Token header (hmac.compare_digest)
-    Extract channel_id → look up tenant
+    Extract channel_id → look up operator
     Check event.type → only 'messages' continues
     Check from_me:
       true  → owner_action_handler (operator typed from phone)
@@ -61,7 +61,7 @@ RUNTIME PIPELINE (read this to understand the full flow):
 
   Queue worker:
     Deduplication check (message_id, 10-min TTL cache)
-    Acquire per-user lock (tenant_id + phone)
+    Acquire per-user lock (operator_id + phone)
     Add to message buffer
     Reset 3-second debounce timer
 
@@ -117,7 +117,7 @@ ACCOUNT SETUP (one-time, done by developer):
   3. Get Partner API token from dashboard
   4. Note your Project ID
 
-CHANNEL SETUP PER OPERATOR (via onboard_tenant.py script):
+CHANNEL SETUP PER OPERATOR (via onboard_operator.py script):
 
   Step 1 — Create channel:
     PUT https://manager.whapi.cloud/channels
@@ -151,9 +151,9 @@ CHANNEL SETUP PER OPERATOR (via onboard_tenant.py script):
   Step 4 — Operator scans QR in WhatsApp > Linked Devices
     Whapi fires users.post webhook to your server.
     Extract connected phone number from payload.
-    Store in tenant record.
+    Store in operator record.
 
-  Step 5 — Store in tenant record (all sensitive fields encrypted):
+  Step 5 — Store in operator record (all sensitive fields encrypted):
     whapi_channel_id, whapi_channel_token, whapi_webhook_secret
 
 WEBHOOK AUTHENTICATION:
@@ -162,7 +162,7 @@ WEBHOOK AUTHENTICATION:
 
   On every incoming webhook:
     received = request.headers.get("X-Salelular-Token", "")
-    expected = decrypt(tenant.whapi_webhook_secret)
+    expected = decrypt(operator.whapi_webhook_secret)
     if not hmac.compare_digest(received, expected):
         return Response(status_code=403)
 
@@ -217,36 +217,36 @@ RETRY ON SEND FAILURE:
 SESSION HEALTH MONITORING:
   users.delete webhook = session expired or manually disconnected.
   Handler in session_disconnect_handler.py:
-    Set tenant.status = DISCONNECTED
-    Send alert to tenant.owner_personal_phone
-    Stop processing customer messages for that tenant
+    Set operator.status = DISCONNECTED
+    Send alert to operator.owner_personal_phone
+    Stop processing customer messages for that operator
 
   Background health check (every WHAPI_HEALTH_CHECK_INTERVAL_S seconds):
     GET https://gate.whapi.cloud/health?token={channel_token}
     If response status != CONNECTED: trigger disconnect flow.
 
   users.post webhook = session reconnected:
-    Set tenant.status = ACTIVE
+    Set operator.status = ACTIVE
     Notify operator: "Your Salelular bot is back online."
 
 ---
 
 ## S3 — Data models
 
-TENANT (app/models/tenant.py):
+OPERATOR (app/models/operator.py):
 
   from dataclasses import dataclass
   from enum import Enum
   from datetime import datetime
 
-  class TenantStatus(Enum):
+  class OperatorStatus(Enum):
       ACTIVE       = 'active'
       DISCONNECTED = 'disconnected'
       SUSPENDED    = 'suspended'
 
   @dataclass
-  class Tenant:
-      tenant_id: str                    # UUID
+  class Operator:
+      operator_id: str                    # UUID
       shop_name: str
       owner_name: str
       owner_personal_phone: str         # E.164, control thread destination
@@ -257,7 +257,7 @@ TENANT (app/models/tenant.py):
       google_sheets_id: str
       luganda_canned_response: str      # operator-provided, never LLM-generated
       llm_model: str                    # e.g. "gpt-4o"
-      status: TenantStatus
+      status: OperatorStatus
       created_at: datetime
 
 SESSION (app/models/session.py):
@@ -270,7 +270,7 @@ SESSION (app/models/session.py):
 
   @dataclass
   class Session:
-      tenant_id: str
+      operator_id: str
       phone: str                        # customer phone, E.164
       name: str | None
       language: str | None              # 'en' | 'lg' | 'mixed'
@@ -317,20 +317,20 @@ PROCESSING ORDER — every step must pass before the next:
 
   1. Extract X-Salelular-Token header
   2. Parse JSON body, extract channel_id
-  3. Look up tenant by channel_id from in-memory tenant cache
+  3. Look up operator by channel_id from in-memory operator cache
      If not found: return 200 (not 404 — do not reveal channel existence)
   4. Compare header token via hmac.compare_digest against
-     decrypt(tenant.whapi_webhook_secret)
+     decrypt(operator.whapi_webhook_secret)
      If mismatch or header missing: return 403, log IP and timestamp
-  5. Check tenant.status — SUSPENDED: return 200 and stop
+  5. Check operator.status — SUSPENDED: return 200 and stop
   6. Check event.type — only 'messages' continues, all others: 200 and stop
   7. Check from_me:
-       true  → call owner_action_handler(payload, tenant), return 200
+       true  → call owner_action_handler(payload, operator), return 200
        false → continue
   8. Check chat_id — ends with @g.us: discard, return 200
   9. Check sender phone against contacts cache — known contact: discard, return 200
   10. Return 200 OK
-  11. queue.put_nowait(payload, tenant)  ← fire and forget
+  11. queue.put_nowait(payload, operator)  ← fire and forget
 
 The receiver must complete within 5 seconds or Whapi retries.
 Steps 1-10 are fast (in-memory lookups only). The queue handles everything else.
@@ -341,7 +341,7 @@ Steps 1-10 are fast (in-memory lookups only). The queue handles everything else.
 
 FILE: app/queue/queue.py
   asyncio.Queue instance (module-level singleton)
-  Items: (payload: dict, tenant: Tenant)
+  Items: (payload: dict, operator: Operator)
   Swap point: replace asyncio.Queue with aioredis queue.
   Worker code is unchanged when swapping.
 
@@ -350,10 +350,10 @@ FILE: app/queue/worker.py
 
   Per-user serialisation:
     _locks: dict[tuple, asyncio.Lock] = {}
-    key = (tenant.tenant_id, sender_phone)
+    key = (operator.operator_id, sender_phone)
     lock = _locks.setdefault(key, asyncio.Lock())
     async with lock:
-        await pipeline.runner.run(payload, tenant)
+        await pipeline.runner.run(payload, operator)
 
   Different users processed concurrently.
   Same user processed serially.
@@ -369,24 +369,24 @@ FILE: app/queue/worker.py
 ## S6 — Message buffer
 
 FILE: app/buffer/buffer.py
-Keyed by (tenant_id, phone). Stores raw Whapi webhook payloads.
+Keyed by (operator_id, phone). Stores raw Whapi webhook payloads.
 
 BEHAVIOUR:
-  add(tenant_id, phone, payload):
+  add(operator_id, phone, payload):
     Append payload to user's buffer list
     Cancel existing timer for this user
     If buffer length >= 10: flush immediately (force-flush)
     Else: start new 3-second asyncio timer → on_flush callback
 
-  on_flush(tenant_id, phone):
+  on_flush(operator_id, phone):
     If time since last flush < BUFFER_RATE_LIMIT_S (8 seconds):
       Delay flush until rate limit window passes
     Retrieve all payloads
     Clear buffer
     Cancel timer
-    Call pipeline.runner.run(payloads, tenant)
+    Call pipeline.runner.run(payloads, operator)
 
-  handle_deletion(tenant_id, phone, message_id):
+  handle_deletion(operator_id, phone, message_id):
     Remove payload with matching id from buffer if present
     If already flushed: log and ignore (cannot undo)
 
@@ -449,14 +449,14 @@ PROMPT:
 ROUTING:
   ENGLISH  → continue to conversation engine
   MIXED    → continue to conversation engine
-  LUGANDA  → send tenant.luganda_canned_response to customer
-              send alert to tenant.owner_personal_phone with raw text
+  LUGANDA  → send operator.luganda_canned_response to customer
+              send alert to operator.owner_personal_phone with raw text
               stop — do not call conversation engine
   UNKNOWN  → same as LUGANDA
   failure  → default to ENGLISH, log warning, continue
 
 LUGANDA CANNED RESPONSE:
-  Stored in tenant.luganda_canned_response.
+  Stored in operator.luganda_canned_response.
   Operator-provided at onboarding. Never LLM-generated.
   Should be in both Luganda and English, e.g.:
   "Webale okutuwa obubaka! Tuzaanukula mangu. /
@@ -470,8 +470,8 @@ FILE: app/adapters/storage/
 Interface: StorageAdapter (base.py)
 MVP: sqlite_adapter.py
 
-All queries include tenant_id as mandatory filter.
-No cross-tenant data access is possible by design.
+All queries include operator_id as mandatory filter.
+No cross-operator data access is possible by design.
 
 SESSION EXPIRY:
   If session.last_active > SESSION_EXPIRY_DAYS old:
@@ -492,7 +492,7 @@ HISTORY COMPRESSION:
 ## S10 — Conversation engine and system prompt
 
 FILE: app/engine/conversation.py
-Receives: tenant, session, unified_text
+Receives: operator, session, unified_text
 Builds full LLM context. Calls LLM. Executes tool loop. Returns reply + products.
 
 TOOL EXECUTION LOOP:
@@ -649,14 +649,14 @@ FILE: app/pipeline/response_builder.py
 FILE: app/adapters/messaging/whapi.py
 Interface: MessagingAdapter (base.py)
 
-Both methods include tenant context. Token retrieved per-call:
-  token = decrypt(tenant.whapi_channel_token)
+Both methods include operator context. Token retrieved per-call:
+  token = decrypt(operator.whapi_channel_token)
 
-send_text(phone, text, tenant):
+send_text(phone, text, operator):
   POST https://gate.whapi.cloud/messages/text?token={token}
   Body: { "to": f"{phone}@s.whatsapp.net", "body": text, "typing_time": N }
 
-send_image(phone, image_url, caption, tenant):
+send_image(phone, image_url, caption, operator):
   POST https://gate.whapi.cloud/messages/image?token={token}
   Body: { "to": f"{phone}@s.whatsapp.net",
           "image": { "url": image_url }, "caption": caption }
@@ -667,7 +667,7 @@ Retry logic (both methods):
     Attempt 2 after 1 second
     Attempt 3 after 2 seconds
     After 3 failures: log structured error with full payload
-    Send alert to tenant.owner_personal_phone via a direct API call
+    Send alert to operator.owner_personal_phone via a direct API call
     (This alert call has no retry — if it fails, log and stop)
 
 ---
@@ -676,12 +676,12 @@ Retry logic (both methods):
 
 FILE: app/engine/handoff.py
 
-trigger(session, summary, tenant, triggering_message):
+trigger(session, summary, operator, triggering_message):
   1. session.stage = HANDED_OFF
   2. session.handed_off_at = datetime.utcnow()
   3. session.active_handoff_phone = session.phone
   4. persist session via storage adapter
-  5. Send interactive notification to tenant.owner_personal_phone:
+  5. Send interactive notification to operator.owner_personal_phone:
 
      "Ready to close:
       Customer: {session.name or session.phone}
@@ -701,18 +701,18 @@ trigger(session, summary, tenant, triggering_message):
 
 OWNER RELAY (operator types in control thread while stage=HANDED_OFF):
   Detected in owner_action_handler.py when:
-    Message from tenant.owner_personal_phone
+    Message from operator.owner_personal_phone
     Message is not a recognised command
-    A session with active_handoff_phone exists for this tenant
+    A session with active_handoff_phone exists for this operator
 
   Action:
     Forward operator's message to session.active_handoff_phone
-    via messaging_adapter.send_text(active_handoff_phone, text, tenant)
+    via messaging_adapter.send_text(active_handoff_phone, text, operator)
     Append forwarded message to session.history as role='assistant'
     Persist session
 
   IMPORTANT — concurrent handoff edge case:
-    Only one active_handoff_phone per tenant at MVP.
+    Only one active_handoff_phone per operator at MVP.
     If trigger_handoff fires for a second customer while relay is active:
       Alert operator as normal (they get a second notification)
       Set second customer's session.stage = HANDED_OFF
@@ -722,7 +722,7 @@ OWNER RELAY (operator types in control thread while stage=HANDED_OFF):
     Log a warning when this occurs.
 
 OWNER COMMANDS (in owner_action_handler.py):
-  Incoming messages from tenant.owner_personal_phone that are text commands.
+  Incoming messages from operator.owner_personal_phone that are text commands.
   Comparison: strip, lowercase.
 
   "resume" or "resume {phone}":
@@ -761,7 +761,7 @@ HOLDING MESSAGE:
 
 PASSIVE INTERRUPTION DETECTION:
   In webhook receiver, from_me: true in a customer chat:
-    Find session for that chat (tenant_id + chat_id phone)
+    Find session for that chat (operator_id + chat_id phone)
     If session exists: set stage = OWNER_ACTIVE
     Log: owner_typed_in_customer_thread
     Do not route to pipeline
@@ -776,14 +776,14 @@ Purpose: prevent bot from responding to operator's personal contacts.
 Source: GET https://gate.whapi.cloud/contacts?token={channel_token}
 
 CACHE:
-  Per-tenant set of phone numbers (E.164).
-  Loaded at startup for all active tenants.
+  Per-operator set of phone numbers (E.164).
+  Loaded at startup for all active operators.
   Refreshed hourly via asyncio background task.
   On Whapi API failure: serve stale cache, log warning.
 
 LOOKUP (in webhook receiver, step 9):
   sender_phone = normalise(payload["messages"][0]["from"])
-  if sender_phone in contacts_cache[tenant.tenant_id]:
+  if sender_phone in contacts_cache[operator.operator_id]:
       return 200  # discard silently
 
 This is the privacy boundary. The operator's personal conversations
@@ -797,7 +797,7 @@ WEBHOOK TOKEN AUTHENTICATION:
   Custom header X-Salelular-Token configured per Whapi channel.
   Comparison: hmac.compare_digest(received, expected) — constant-time.
   Secret generated at channel creation: secrets.token_urlsafe(32).
-  Stored encrypted in tenant.whapi_webhook_secret.
+  Stored encrypted in operator.whapi_webhook_secret.
   Return 403 on mismatch. Return 200 on unknown channel_id.
 
 ENCRYPTION AT REST:
@@ -829,10 +829,10 @@ LOGGING PRIVACY:
   Message content: log type and len(content) only. Never the content.
 
 DATA ISOLATION:
-  All DB queries include tenant_id as mandatory WHERE clause.
-  No query path retrieves data across tenant boundaries.
-  Whapi channel token is per-tenant — a bug in one tenant cannot
-  cause sends from another tenant's number.
+  All DB queries include operator_id as mandatory WHERE clause.
+  No query path retrieves data across operator boundaries.
+  Whapi channel token is per-operator — a bug in one operator cannot
+  cause sends from another operator's number.
 
 ---
 
@@ -844,29 +844,29 @@ from here only. No direct use of Python's logging module elsewhere.
 
 Required log events and their fields:
 
-  message_received:     tenant_id, phone_hash, message_id, type, from_me
-  message_discarded:    reason, message_id, tenant_id
-  message_deduplicated: message_id, tenant_id
-  buffer_flushed:       tenant_id, phone_hash, message_count
-  language_classified:  tenant_id, phone_hash, result, duration_ms
-  language_escalated:   tenant_id, phone_hash
-  input_processed:      tenant_id, phone_hash, types_present, total_chars
-  llm_called:           tenant_id, model, input_tokens, output_tokens, latency_ms
-  tool_called:          tenant_id, tool_name
-  tool_result:          tenant_id, tool_name, result_count
-  message_sent:         tenant_id, phone_hash, type, typing_time_ms
-  send_failed:          tenant_id, phone_hash, attempt, error_code
-  handoff_triggered:    tenant_id, phone_hash
-  owner_relay_sent:     tenant_id, phone_hash, char_count
-  session_updated:      tenant_id, phone_hash, fields_changed
-  owner_command:        tenant_id, command_type
-  session_disconnect:   tenant_id, channel_id
-  session_reconnect:    tenant_id, channel_id
-  inventory_refreshed:  tenant_id, product_count, duration_ms
-  error:                tenant_id, component, error_type, message
+  message_received:     operator_id, phone_hash, message_id, type, from_me
+  message_discarded:    reason, message_id, operator_id
+  message_deduplicated: message_id, operator_id
+  buffer_flushed:       operator_id, phone_hash, message_count
+  language_classified:  operator_id, phone_hash, result, duration_ms
+  language_escalated:   operator_id, phone_hash
+  input_processed:      operator_id, phone_hash, types_present, total_chars
+  llm_called:           operator_id, model, input_tokens, output_tokens, latency_ms
+  tool_called:          operator_id, tool_name
+  tool_result:          operator_id, tool_name, result_count
+  message_sent:         operator_id, phone_hash, type, typing_time_ms
+  send_failed:          operator_id, phone_hash, attempt, error_code
+  handoff_triggered:    operator_id, phone_hash
+  owner_relay_sent:     operator_id, phone_hash, char_count
+  session_updated:      operator_id, phone_hash, fields_changed
+  owner_command:        operator_id, command_type
+  session_disconnect:   operator_id, channel_id
+  session_reconnect:    operator_id, channel_id
+  inventory_refreshed:  operator_id, product_count, duration_ms
+  error:                operator_id, component, error_type, message
 
 Daily cost log at midnight UTC:
-  llm_cost_summary: tenant_id, input_tokens, output_tokens,
+  llm_cost_summary: operator_id, input_tokens, output_tokens,
                     vision_calls, estimated_cost_usd
 
 ---
@@ -925,18 +925,18 @@ app/main.py runs these in order. Any failure exits with a descriptive error.
   2. crypto.init()
        Load ENCRYPTION_KEY. Verify it decodes to exactly 32 bytes. Exit if not.
 
-  3. db = TenantAdapter.from_env()
+  3. db = OperatorAdapter.from_env()
        Connect to SQLite. Run schema migrations. Verify connection.
-       Load all active tenants into in-memory cache (dict keyed by channel_id).
+       Load all active operators into in-memory cache (dict keyed by channel_id).
 
-  4. contacts_cache = ContactsCache(tenants)
-       For each active tenant: load saved contacts from Whapi.
+  4. contacts_cache = ContactsCache(operators)
+       For each active operator: load saved contacts from Whapi.
        Start hourly refresh background task.
 
-  5. inventory = InventoryAdapter(tenants)
-       For each active tenant: load Google Sheet, build search index.
+  5. inventory = InventoryAdapter(operators)
+       For each active operator: load Google Sheet, build search index.
        Start 5-minute background refresh task.
-       Fail startup if zero products load for any active tenant.
+       Fail startup if zero products load for any active operator.
 
   6. llm = LLMAdapter.from_env()
        Initialise OpenAI client. Verify API key with a minimal test call.
@@ -945,12 +945,12 @@ app/main.py runs these in order. Any failure exits with a descriptive error.
        Initialise (same OpenAI client, different model param).
 
   8. messaging = MessagingAdapter()
-       No initialisation needed — tokens are per-tenant, loaded per-call.
+       No initialisation needed — tokens are per-operator, loaded per-call.
 
   9. storage = StorageAdapter.from_env()
        Connect to SQLite. Verify sessions table exists.
 
-  10. health_monitor = HealthMonitor(tenants, messaging)
+  10. health_monitor = HealthMonitor(operators, messaging)
         Start 30-minute background health check task.
 
   11. app = build_app(all adapters)
@@ -1002,12 +1002,12 @@ These are deferred from MVP. Designed in, not built in.
     search() interface unchanged. No other changes.
 
   Subscription and plan management
-    Add plan and status fields to Tenant model.
+    Add plan and status fields to Operator model.
     Add plan limit enforcement in pipeline/runner.py before engine call.
     No structural changes to any other component.
 
   Self-serve operator onboarding (web app)
-    Separate deployment. Writes to same tenants database.
+    Separate deployment. Writes to same operators database.
     Core bot reads it. No direct API calls between them.
 
   Anthropic Claude as alternative LLM
@@ -1081,7 +1081,7 @@ PHASE 5 — Handoff and owner control
 PHASE 6 — Resilience
   Files: rate limiting in buffer.py, daily cap in runner.py,
          LLM timeout handling, tool loop limits, cost tracking log,
-         scripts/onboard_tenant.py
+         scripts/onboard_operator.py
   Goal: all edge cases in S18 handled. System survives bad input, API failures,
         concurrent users, session expiry.
   First testable moment: run integration test suite against all S18 scenarios.
@@ -1113,13 +1113,13 @@ WHAT THE OPERATOR DOES:
      This is the only ongoing maintenance requirement.
      The system alerts them if the session drops.
 
-WHAT THE SCRIPT DOES (scripts/onboard_tenant.py):
+WHAT THE SCRIPT DOES (scripts/onboard_operator.py):
   1. Generate 32-byte random secret for webhook auth
   2. Create Whapi channel via Partner API
   3. Configure channel (webhook URL, secret header, events, auto_download)
   4. Generate QR code URL, display it or email it to operator
   5. Wait for users.post webhook confirming number connected
-  6. Create tenant record in DB (encrypt sensitive fields)
+  6. Create operator record in DB (encrypt sensitive fields)
   7. Load inventory from Google Sheet
   8. Confirm product count, print success
 
@@ -1155,7 +1155,7 @@ SQLite concurrency limit:
   Write contention at high concurrent users.
   Acceptable for MVP. Postgres swap documented.
 
-Single active relay per tenant:
+Single active relay per operator:
   Only one customer can be in relay at a time. Second handoff alert
   is sent but relay does not activate until first is cleared.
   Acceptable for MVP. Multi-agent routing is extension point.

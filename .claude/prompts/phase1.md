@@ -7,7 +7,7 @@ Everything tested by running Python scripts directly.
 
 ## Read these SPEC sections first
 
-  S3  — Data models (Tenant, Session, Product, Stage)
+  S3  — Data models (Operator, Session, Product, Stage)
   S16 — Security (encryption, phone normalisation)
   S17 — Logging (structured JSON logger)
 
@@ -39,7 +39,7 @@ Everything tested by running Python scripts directly.
   All other modules import this function and use it exclusively.
 
 ### 4. app/models/ (all four files)
-  tenant.py  — Tenant dataclass + TenantStatus enum (as in S3)
+  operator.py  — Operator dataclass + OperatorStatus enum (as in S3)
   session.py — Session dataclass + Stage enum (as in S3)
   product.py — Product dataclass (as in S3)
   message.py — simple dataclass for normalised inbound message:
@@ -56,7 +56,7 @@ Everything tested by running Python scripts directly.
         chat_id: str
         timestamp: int
         channel_id: str
-        tenant_id: str
+        operator_id: str
 
 ### 5. app/config.py
   validate() function:
@@ -74,31 +74,31 @@ Everything tested by running Python scripts directly.
   SQLite implementation of StorageAdapter.
   Schema:
     CREATE TABLE IF NOT EXISTS sessions (
-      tenant_id TEXT NOT NULL,
+      operator_id TEXT NOT NULL,
       phone TEXT NOT NULL,
       data TEXT NOT NULL,      -- JSON serialised Session
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (tenant_id, phone)
+      PRIMARY KEY (operator_id, phone)
     )
-  get: SELECT data WHERE tenant_id=? AND phone=?  → deserialise or None
+  get: SELECT data WHERE operator_id=? AND phone=?  → deserialise or None
   set: INSERT OR REPLACE with json.dumps(session.__dict__)
-  delete: DELETE WHERE tenant_id=? AND phone=?
+  delete: DELETE WHERE operator_id=? AND phone=?
 
-### 8. app/adapters/tenant/base.py + sqlite_adapter.py
+### 8. app/adapters/operator/base.py + sqlite_adapter.py
   Same pattern as storage. Schema:
-    CREATE TABLE IF NOT EXISTS tenants (
-      tenant_id TEXT PRIMARY KEY,
-      data TEXT NOT NULL,       -- JSON serialised Tenant
+    CREATE TABLE IF NOT EXISTS operators (
+      operator_id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,       -- JSON serialised Operator
       channel_id TEXT NOT NULL, -- indexed for fast lookup
       status TEXT NOT NULL
     )
-    CREATE INDEX IF NOT EXISTS idx_channel_id ON tenants(channel_id)
+    CREATE INDEX IF NOT EXISTS idx_channel_id ON operators(channel_id)
   get_by_channel_id: SELECT WHERE channel_id=?
   get_all_active: SELECT WHERE status='active'
-  update_status: UPDATE WHERE tenant_id=?
+  update_status: UPDATE WHERE operator_id=?
 
 ### 9. scripts/check_session.py
-  Creates a test Tenant and test Session.
+  Creates a test Operator and test Session.
   Saves both to SQLite.
   Reads both back.
   Prints them to console.
