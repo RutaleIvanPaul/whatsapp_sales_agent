@@ -26,11 +26,14 @@ class Config:
     whapi_health_check_interval_s: int
     port: int
 
-    # LLM (Phase 4)
-    anthropic_api_key: str
+    # LLM (Phase 4 + multi-provider)
+    llm_provider: str           # anthropic | groq
+    llm_api_key: str
     llm_model: str
+    vision_provider: str        # anthropic | groq
+    vision_api_key: str
     vision_model: str
-    classifier_model: str
+    classifier_model: str       # uses LLM_PROVIDER + LLM_API_KEY
     max_history_turns: int
     session_expiry_days: int
 
@@ -76,9 +79,17 @@ def validate() -> Config:
     whapi_health_check_interval_s = int(os.getenv("WHAPI_HEALTH_CHECK_INTERVAL_S", "1800"))
     port = int(os.getenv("PORT", "8000"))
 
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    # LLM provider — Anthropic by default, Groq fallback for the temporary
+    # "no Anthropic credit" path. Same key shape (LLM_API_KEY) for either.
+    llm_provider = os.getenv("LLM_PROVIDER", "anthropic")
+    llm_api_key = os.getenv("LLM_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL", "claude-sonnet-4-6")
+
+    # Vision can use a different provider than the conversation LLM.
+    vision_provider = os.getenv("VISION_PROVIDER", llm_provider)
+    vision_api_key = os.getenv("VISION_API_KEY") or llm_api_key
     vision_model = os.getenv("VISION_MODEL", "claude-sonnet-4-6")
+
     classifier_model = os.getenv("CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
     max_history_turns = int(os.getenv("MAX_HISTORY_TURNS", "10"))
     session_expiry_days = int(os.getenv("SESSION_EXPIRY_DAYS", "7"))
@@ -96,8 +107,11 @@ def validate() -> Config:
         buffer_rate_limit_s=buffer_rate_limit_s,
         whapi_health_check_interval_s=whapi_health_check_interval_s,
         port=port,
-        anthropic_api_key=anthropic_api_key,
+        llm_provider=llm_provider,
+        llm_api_key=llm_api_key,
         llm_model=llm_model,
+        vision_provider=vision_provider,
+        vision_api_key=vision_api_key,
         vision_model=vision_model,
         classifier_model=classifier_model,
         max_history_turns=max_history_turns,

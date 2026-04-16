@@ -1,29 +1,27 @@
-"""Language classifier — direct Anthropic call, no LLMAdapter.
+"""Language classifier — uses an LLMAdapter so it works with any provider.
 
-Architectural exception (per Phase 4 plan, decision #2): this is a
-single-purpose constrained call (max 10 tokens, fixed model). The
-LLMAdapter abstraction adds no value for a one-shot classification, so
-we use AsyncAnthropic directly. If we ever need to swap the classifier
-provider, refactor this single file.
+Phase 4 originally used a direct Anthropic call here. With multi-provider
+support (Anthropic / Groq), routing through the LLMAdapter abstraction is
+the simpler path. The classifier just needs `chat()` with no tools.
 """
 
 from __future__ import annotations
 
 import time
 
-import anthropic
-from anthropic import AsyncAnthropic
-
+from app.adapters.llm.base import LLMAdapter, LLMTimeoutError
 from app.utils.log import log
 
-CLASSIFIER_TIMEOUT_S = 10.0
 CLASSIFIER_MAX_TOKENS = 10
 SYSTEM_PROMPT = "You are a language classifier. Reply with exactly one word."
 
 VALID_LABELS = {"ENGLISH", "LUGANDA", "MIXED", "UNKNOWN"}
 
 
-async def classify(text: str, api_key: str, model: str) -> str:
+async def classify(text: str, llm: LLMAdapter) -> str:
+    """Classify the language of a message. Returns one of:
+    ENGLISH | LUGANDA | MIXED | UNKNOWN. Returns ENGLISH on any failure.
+    """
     if not text.strip():
         return "ENGLISH"
 
@@ -33,36 +31,18 @@ async def classify(text: str, api_key: str, model: str) -> str:
         f"Message: {text}"
     )
 
-    client = AsyncAnthropic(api_key=api_key, timeout=CLASSIFIER_TIMEOUT_S)
     start = time.monotonic()
     try:
-        response = await client.messages.create(
-            model=model,
-            max_tokens=CLASSIFIER_MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+        response = await llm.chat(
             messages=[{"role": "user", "content": user_prompt}],
+            tools=[],
+            system=SYSTEM_PROMPT,
+            max_tokens=CLASSIFIER_MAX_TOKENS,
         )
-        latency_ms = int((time.monotonic() - start) * 1000)
-
-        text_parts = [b.text for b in response.content if b.type == "text"]
-        raw = "".join(text_parts).strip().upper()
-        # Take first whitespace-separated token to be defensive
-        label = raw.split()[0] if raw else "ENGLISH"
-        if label not in VALID_LABELS:
-            log(
-                "language_unrecognised",
-                raw=raw[:50],
-                latency_ms=latency_ms,
-            )
-            label = "UNKNOWN"
-
-        log(
-            "language_classified",
-            result=label,
-            duration_ms=latency_ms,
-        )
-        return label
-    except (anthropic.APIError, anthropic.APITimeoutError, Exception) as e:
+    except LLMTimeoutError:
+        log("language_timeout")
+        return "ENGLISH"
+    except Exception as e:
         log(
             "error",
             component="language",
@@ -70,3 +50,18 @@ async def classify(text: str, api_key: str, model: str) -> str:
             message=str(e)[:200],
         )
         return "ENGLISH"
+
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    raw = (response.text or "").strip().upper()
+    label = raw.split()[0] if raw else "ENGLISH"
+    if label not in VALID_LABELS:
+        log(
+            "language_unrecognised",
+            raw=raw[:50],
+            latency_ms=latency_ms,
+        )
+        label = "UNKNOWN"
+
+    log("language_classified", result=label, duration_ms=latency_ms)
+    return label

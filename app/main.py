@@ -98,8 +98,17 @@ async def lifespan(app: FastAPI):
 
     # --- Step 5b: LLM + vision adapters (Phase 4) ---
     llm_adapter = llm_factory.from_config(cfg)
+    classifier_llm = llm_factory.from_config(cfg, model=cfg.classifier_model)
     vision_adapter = vision_factory.from_config(cfg)
-    log("startup", phase="llm_ready", llm_model=cfg.llm_model, vision_model=cfg.vision_model)
+    log(
+        "startup",
+        phase="llm_ready",
+        llm_provider=cfg.llm_provider,
+        llm_model=cfg.llm_model,
+        classifier_model=cfg.classifier_model,
+        vision_provider=cfg.vision_provider,
+        vision_model=cfg.vision_model,
+    )
 
     # --- Step 6: contacts cache + hourly refresh ---
     contacts_cache = ContactsCache(cfg.encryption_key)
@@ -133,12 +142,11 @@ async def lifespan(app: FastAPI):
             payloads,
             operator,
             llm=llm_adapter,
+            classifier_llm=classifier_llm,
             vision=vision_adapter,
             inventory=inv,
             messaging=messaging_adapter,
             storage=storage_adapter,
-            anthropic_api_key=cfg.anthropic_api_key,
-            classifier_model=cfg.classifier_model,
             max_history_turns=cfg.max_history_turns,
             session_expiry_days=cfg.session_expiry_days,
         )

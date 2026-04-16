@@ -12,3 +12,4 @@ google-auth
 google-api-python-client
 rapidfuzz
 anthropic>=0.40.0
+groq>=0.11.0
