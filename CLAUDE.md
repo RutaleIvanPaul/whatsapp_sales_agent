@@ -21,8 +21,8 @@ Read only the section you need. Never load the entire file at once.
 
 ## Current phase
 
-PHASE 2 — Inventory
-Read .claude/prompts/phase2.md before doing anything else.
+PHASE 3 — Webhook and Messaging
+Read .claude/prompts/phase3.md before doing anything else.
 Update this line when advancing phases.
 
 ---

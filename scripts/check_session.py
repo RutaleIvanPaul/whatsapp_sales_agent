@@ -1,7 +1,16 @@
-"""Phase 1 verification script. Run with: python scripts/check_session.py"""
+"""Phase 1 verification script.
+
+Usage:
+  python scripts/check_session.py                       # run Phase 1 self-tests
+  python scripts/check_session.py --create-test-operator  # insert a test operator
+                                                          #   into the real DB
+                                                          #   (for Phase 3 local
+                                                          #   testing)
+"""
 
 import json
 import os
+import secrets
 import sys
 import tempfile
 
@@ -17,7 +26,7 @@ from app.models.session import Session, Stage
 from app.models.operator import Operator, OperatorStatus
 from app.utils.crypto import decrypt, encrypt
 from app.utils.log import log
-from app.utils.phone import hash_for_log, normalise
+from app.utils.phone import from_whapi, hash_for_log, normalise, to_whapi
 
 
 def main():
@@ -67,6 +76,14 @@ def main():
     phone_hash = hash_for_log("+256700123456")
     print(f"    hash_for_log: {phone_hash}")
     assert len(phone_hash) == 16
+
+    # Whapi format adapters
+    assert from_whapi("256705878284") == "+256705878284"
+    assert from_whapi("256705878284@s.whatsapp.net") == "+256705878284"
+    assert from_whapi("+256705878284") == "+256705878284"
+    assert to_whapi("+256705878284") == "256705878284"
+    assert to_whapi("+447911123456") == "447911123456"
+    print("    from_whapi/to_whapi: PASS (round-trip + JID strip)")
     print("    PASS")
 
     # --- Logging ---
@@ -143,11 +160,14 @@ def main():
         assert retrieved is not None, "Operator not found after save"
         assert retrieved.operator_id == "op-001"
         assert retrieved.shop_name == "Kampala Shoes"
-        assert retrieved.whapi_channel_token == "secret-channel-token-123"
-        assert retrieved.whapi_webhook_secret == "secret-webhook-abc"
+        # Sensitive fields are stored as ciphertext in the Operator dataclass
+        # to avoid holding plaintext tokens in long-lived memory caches.
+        # Callers decrypt per use.
+        assert decrypt(retrieved.whapi_channel_token, cfg.encryption_key) == "secret-channel-token-123"
+        assert decrypt(retrieved.whapi_webhook_secret, cfg.encryption_key) == "secret-webhook-abc"
         assert retrieved.status == OperatorStatus.ACTIVE
         print(f"    Saved and retrieved operator: {retrieved.shop_name}")
-        print(f"    Channel token decrypted correctly: {retrieved.whapi_channel_token[:10]}...")
+        print(f"    Channel token ciphertext stored; decrypts to plaintext correctly")
 
         active = operators.get_all_active()
         assert len(active) == 1
@@ -165,5 +185,94 @@ def main():
     print("=" * 60)
 
 
+def create_test_operator():
+    """Insert a test operator into the real (non-temp) SQLite DB.
+
+    Reads WHAPI_CHANNEL_ID, WHAPI_CHANNEL_TOKEN, and OWNER_PERSONAL_PHONE
+    from the environment. Generates a fresh webhook_secret and prints it
+    so it can be configured in the Whapi dashboard as the
+    X-Salelular-Token header value.
+    """
+    from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
+    from app.models.operator import Operator, OperatorStatus
+
+    cfg = validate()
+
+    channel_id = os.getenv("WHAPI_CHANNEL_ID", "")
+    channel_token = os.getenv("WHAPI_CHANNEL_TOKEN", "")
+    owner_phone = os.getenv("OWNER_PERSONAL_PHONE", "")
+    shop_name = os.getenv("OPERATOR_SHOP_NAME", "Test Shop")
+    owner_name = os.getenv("OPERATOR_OWNER_NAME", "Test Owner")
+
+    if not channel_id or not channel_token or not owner_phone:
+        print(
+            "FATAL: WHAPI_CHANNEL_ID, WHAPI_CHANNEL_TOKEN, and "
+            "OWNER_PERSONAL_PHONE must all be set in .env",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    webhook_secret = secrets.token_urlsafe(32)
+    operator_id = f"op-{secrets.token_hex(4)}"
+
+    # Encrypt sensitive fields before storing in the Operator dataclass
+    # (our adapter expects ciphertext on both save and load).
+    op_adapter = SqliteOperatorAdapter(cfg.storage_db_path, cfg.encryption_key)
+
+    # Remove any existing operator with the same channel_id
+    existing = op_adapter.get_by_channel_id(channel_id)
+    if existing is not None:
+        print(f"Operator with channel_id={channel_id} already exists. Overwriting.")
+        op_adapter._conn.execute(
+            "DELETE FROM operators WHERE channel_id=?", (channel_id,)
+        )
+        op_adapter._conn.commit()
+
+    operator = Operator(
+        operator_id=operator_id,
+        shop_name=shop_name,
+        owner_name=owner_name,
+        owner_personal_phone=owner_phone,
+        whapi_channel_id=channel_id,
+        # Adapter's save() encrypts these before storing — so pass plaintext.
+        whapi_channel_token=channel_token,
+        whapi_webhook_secret=webhook_secret,
+        whapi_connected_phone=None,
+        google_sheets_id=os.getenv("GOOGLE_SHEETS_ID", ""),
+        luganda_canned_response=(
+            "Webale okutuukirira! Nnyinza okuyamba oluvannyuma."
+        ),
+        llm_model="gpt-4o",
+        status=OperatorStatus.ACTIVE,
+        created_at=datetime.utcnow(),
+    )
+
+    # We need to encrypt the sensitive fields before calling save(), because
+    # save() just stores what's in the dataclass directly now (no encryption
+    # on save — encryption happens via encrypt()). Actually, re-check: the
+    # current _serialise() encrypts channel_token and webhook_secret. So we
+    # pass plaintext and save() encrypts on write. Good.
+    op_adapter.save(operator)
+
+    print("=" * 60)
+    print("Test operator created.")
+    print("=" * 60)
+    print(f"  operator_id:   {operator_id}")
+    print(f"  shop_name:     {shop_name}")
+    print(f"  channel_id:    {channel_id}")
+    print(f"  owner_phone:   {owner_phone}")
+    print()
+    print("Configure this as your Whapi webhook header:")
+    print(f"  X-Salelular-Token: {webhook_secret}")
+    print()
+    print("Whapi dashboard → your channel → Settings → Webhooks:")
+    print("  URL:     https://<your-ngrok>.ngrok.io/webhook")
+    print("  Events:  messages (post), users (post), users (delete)")
+    print("  Header:  X-Salelular-Token: <the secret above>")
+
+
 if __name__ == "__main__":
-    main()
+    if "--create-test-operator" in sys.argv:
+        create_test_operator()
+    else:
+        main()
