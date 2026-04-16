@@ -8,12 +8,23 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class Config:
+    # Core (Phase 1)
     encryption_key: bytes
     storage_url: str
+    storage_db_path: str
+
+    # Inventory (Phase 2)
     google_credentials_json_b64: str
     google_sheets_id: str
+    google_sheet_name: str
     search_threshold: int
     inventory_refresh_interval_s: int
+
+    # Webhook / buffer / server (Phase 3)
+    buffer_debounce_ms: int
+    buffer_rate_limit_s: int
+    whapi_health_check_interval_s: int
+    port: int
 
 
 def validate() -> Config:
@@ -42,17 +53,41 @@ def validate() -> Config:
         print("FATAL: STORAGE_URL is required but not set.", file=sys.stderr)
         raise SystemExit(1)
 
+    # Parse sqlite:///path to get the file path
+    storage_db_path = _sqlite_path(storage_url)
+
     google_credentials_json_b64 = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
     google_sheets_id = os.getenv("GOOGLE_SHEETS_ID", "")
+    google_sheet_name = os.getenv("GOOGLE_SHEET_NAME", "Sheet1")
 
     search_threshold = int(os.getenv("SEARCH_THRESHOLD", "70"))
     inventory_refresh_interval_s = int(os.getenv("INVENTORY_REFRESH_INTERVAL_S", "300"))
 
+    buffer_debounce_ms = int(os.getenv("BUFFER_DEBOUNCE_MS", "3000"))
+    buffer_rate_limit_s = int(os.getenv("BUFFER_RATE_LIMIT_S", "8"))
+    whapi_health_check_interval_s = int(os.getenv("WHAPI_HEALTH_CHECK_INTERVAL_S", "1800"))
+    port = int(os.getenv("PORT", "8000"))
+
     return Config(
         encryption_key=encryption_key,
         storage_url=storage_url,
+        storage_db_path=storage_db_path,
         google_credentials_json_b64=google_credentials_json_b64,
         google_sheets_id=google_sheets_id,
+        google_sheet_name=google_sheet_name,
         search_threshold=search_threshold,
         inventory_refresh_interval_s=inventory_refresh_interval_s,
+        buffer_debounce_ms=buffer_debounce_ms,
+        buffer_rate_limit_s=buffer_rate_limit_s,
+        whapi_health_check_interval_s=whapi_health_check_interval_s,
+        port=port,
     )
+
+
+def _sqlite_path(url: str) -> str:
+    """Extract filesystem path from a sqlite:/// URL."""
+    if url.startswith("sqlite:///"):
+        return url[len("sqlite:///"):]
+    if url.startswith("sqlite://"):
+        return url[len("sqlite://"):]
+    return url

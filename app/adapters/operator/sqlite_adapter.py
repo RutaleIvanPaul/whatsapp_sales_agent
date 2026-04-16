@@ -69,9 +69,10 @@ class SqliteOperatorAdapter(OperatorAdapter):
         return d
 
     def _deserialise(self, d: dict) -> Operator:
-        for k in ("whapi_channel_token", "whapi_webhook_secret"):
-            if d.get(k):
-                d[k] = decrypt(d[k], self._key)
+        # Sensitive fields (whapi_channel_token, whapi_webhook_secret) remain
+        # as ciphertext in the Operator dataclass. Callers must decrypt per-use
+        # via app.utils.crypto.decrypt(). This is defense-in-depth against
+        # plaintext leakage via memory dumps or accidental logging.
         d["status"] = OperatorStatus(d["status"])
         if d.get("created_at") is not None:
             d["created_at"] = datetime.fromisoformat(d["created_at"])
