@@ -18,7 +18,7 @@ This is the moment the system feels real.
 ## Prerequisites
 
   Phases 1-3 complete and passing.
-  OPENAI_API_KEY in .env.
+  ANTHROPIC_API_KEY in .env.
   At least 5 products in your Google Sheet with image_url values.
 
 ## What to build
@@ -33,22 +33,40 @@ This is the moment the system feels real.
 
   Abstract LLMAdapter with chat() method (signature from CLAUDE.md).
 
-### 2. app/adapters/llm/openai_adapter.py
-  OpenAILLMAdapter implements LLMAdapter.
-  Uses openai Python SDK (openai>=1.0.0).
-  chat() maps messages, tools, system to OpenAI chat.completions.create().
-  Extracts tool_calls from response.
+### 2. app/adapters/llm/anthropic_adapter.py
+  AnthropicLLMAdapter implements LLMAdapter.
+  Uses the anthropic Python SDK (anthropic>=0.40.0). Use AsyncAnthropic.
+  chat() maps messages + tools + system to client.messages.create():
+    - system prompt → top-level `system` param (string)
+    - messages → list of {role: "user"|"assistant", content: ...}
+    - tools → list of {name, description, input_schema (JSON Schema)}
+    - max_tokens: required by Anthropic API (use 1024 for replies)
+    - model: from LLM_MODEL env var (default: claude-sonnet-4-6)
+  Parse the response:
+    - response.content is a list of content blocks
+    - For each block:
+      - type == "text"     → append to text reply
+      - type == "tool_use" → record {id, name, input} as tool call
+    - response.usage.input_tokens / output_tokens for cost logging
   Timeout: 30 seconds (raise LLMTimeoutError on timeout).
-  Log llm_called event with token counts and latency.
+  Log llm_called event with token counts and latency_ms.
 
 ### 3. app/adapters/llm/factory.py
-  from_env() -> LLMAdapter: reads LLM_MODEL, returns OpenAILLMAdapter.
+  from_env() -> LLMAdapter: reads ANTHROPIC_API_KEY + LLM_MODEL,
+  returns AnthropicLLMAdapter.
 
-### 4. app/adapters/vision/base.py + openai_adapter.py + factory.py
+### 4. app/adapters/vision/base.py + anthropic_adapter.py + factory.py
   VisionAdapter with describe(image_url: str) -> str.
-  OpenAI vision: chat.completions.create with image_url content block.
+  Anthropic vision: client.messages.create with content block:
+    {"type": "image", "source": {"type": "url", "url": image_url}}
+  followed by a text block: "Describe this image briefly. Focus on
+  product details: type, colour, brand, key features."
+  Model: VISION_MODEL env var (default: claude-sonnet-4-6).
   Timeout: 8 seconds.
   On failure: return "[image received, could not be described]".
+
+  NOTE: Anthropic supports image URLs directly. If a future provider
+  swap requires base64, convert at this adapter boundary only.
 
 ### 5. app/input/text.py
   clean(text: str) -> str: strip, normalise spaces.
@@ -72,8 +90,11 @@ This is the moment the system feels real.
   Return appropriate placeholder string (see S7).
 
 ### 9. app/input/language.py
-  classify(text: str, api_key: str, model: str) -> str
-  Single OpenAI call with CLASSIFIER_MODEL.
+  async classify(text: str, api_key: str, model: str) -> str
+  Single Anthropic call with CLASSIFIER_MODEL (claude-haiku-4-5-20251001).
+  Use AsyncAnthropic, max_tokens=10, system="You are a language
+  classifier. Reply with exactly one word."
+  User prompt per S8.
   Returns: "ENGLISH" | "LUGANDA" | "MIXED" | "UNKNOWN".
   On API failure: return "ENGLISH" and log warning.
 
@@ -92,10 +113,19 @@ This is the moment the system feels real.
   Includes stale session note if applicable.
 
 ### 12. app/engine/tools.py
-  Tool schemas (for OpenAI function calling format):
-    search_products: { name, description, parameters: {query: string} }
-    update_session:  { name, description, parameters: {fields: object} }
-    trigger_handoff: { name, description, parameters: {summary: string} }
+  Tool schemas (Anthropic format — `input_schema` is JSON Schema):
+    search_products:
+      name: "search_products"
+      description: "Search the product inventory by natural-language query."
+      input_schema: {"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}
+    update_session:
+      name: "update_session"
+      description: "Persist what you have learned about this customer."
+      input_schema: {"type":"object","properties":{"fields":{"type":"object"}},"required":["fields"]}
+    trigger_handoff:
+      name: "trigger_handoff"
+      description: "Alert the operator that the customer is ready to buy."
+      input_schema: {"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}
 
   Tool handlers:
     handle_search_products(query, session, inventory) -> list[Product]
@@ -105,15 +135,24 @@ This is the moment the system feels real.
 
 ### 13. app/engine/conversation.py
   async run(operator, session, unified_text, adapters) -> (str, list[Product])
-  Builds system prompt via system_prompt.py.
+  Builds system prompt via system_prompt.py (string passed as `system`).
   Assembles messages list from session.history.
   Calls LLM with tool definitions.
-  Tool execution loop (max 5 rounds):
-    For each tool_call in response:
-      Dispatch to correct handler in tools.py
-      Append tool result to messages
-    Call LLM again with updated messages
-    If no tool_calls: break loop
+
+  Tool execution loop (max 5 rounds), Anthropic-shaped:
+    Send context to LLM → parse response.content blocks
+    If any tool_use blocks present:
+      Append the assistant message (full content list, including tool_use)
+        to messages
+      For each tool_use block:
+        Dispatch to correct handler in tools.py
+        Append a user message with content:
+          [{"type": "tool_result", "tool_use_id": <id>, "content": <result_str>}]
+      Call LLM again with updated messages
+    Else (only text blocks, or empty content):
+      Concatenate text blocks → reply_text
+      Break loop.
+
   On LLMTimeoutError: return fallback text, log timeout event.
   After loop: return (reply_text, products_shown_this_turn).
   Call update_session to save session after each turn.

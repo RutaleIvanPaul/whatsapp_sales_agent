@@ -149,7 +149,7 @@ def main():
             whapi_connected_phone="+256700111111",
             google_sheets_id="sheet-id-123",
             luganda_canned_response="Webale okutuukirira!",
-            llm_model="gpt-4o",
+            llm_model="claude-sonnet-4-6",
             status=OperatorStatus.ACTIVE,
             created_at=now,
         )
@@ -241,7 +241,7 @@ def create_test_operator():
         luganda_canned_response=(
             "Webale okutuukirira! Nnyinza okuyamba oluvannyuma."
         ),
-        llm_model="gpt-4o",
+        llm_model="claude-sonnet-4-6",
         status=OperatorStatus.ACTIVE,
         created_at=datetime.utcnow(),
     )
