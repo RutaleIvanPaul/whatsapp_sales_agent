@@ -228,7 +228,7 @@ trigger_handoff(summary: str) -> None
 
 EXPLORING    = 'exploring'     active bot conversation
 CONSIDERING  = 'considering'   products shown, customer deciding
-HANDED_OFF   = 'handed_off'    operator alerted, relay mode active
+HANDED_OFF   = 'handed_off'    operator alerted; bot holding the line
 OWNER_ACTIVE = 'owner_active'  operator typing directly in customer thread
 
 ---

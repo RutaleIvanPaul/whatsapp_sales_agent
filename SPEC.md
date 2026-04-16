@@ -279,7 +279,6 @@ SESSION (app/models/session.py):
       constraints: dict                 # {size, colour, budget, ...}
       shown_product_ids: list[str]      # never show these again unprompted
       stage: Stage
-      active_handoff_phone: str | None  # set when operator is in relay
       handed_off_at: datetime | None
       last_holding_sent: datetime | None
       last_active: datetime
@@ -676,95 +675,105 @@ Retry logic (both methods):
 
 FILE: app/engine/handoff.py
 
+DESIGN PRINCIPLE:
+  The operator's personal WhatsApp is used ONLY for alerts and control
+  commands. The bot does NOT relay messages between the operator's
+  personal thread and the customer. When the operator wants to reply to
+  a customer, they open the customer's thread in the shop's WhatsApp
+  (via the wa.me link in the alert) and type there directly. Their typing
+  is detected as passive interruption (from_me: true) and the bot steps
+  aside automatically.
+
+  This removes an entire class of edge cases (concurrent relays, misrouted
+  messages, accidental customer-impersonation) and matches how operators
+  already use WhatsApp.
+
 trigger(session, summary, operator, triggering_message):
   1. session.stage = HANDED_OFF
   2. session.handed_off_at = datetime.utcnow()
-  3. session.active_handoff_phone = session.phone
-  4. persist session via storage adapter
-  5. Send interactive notification to operator.owner_personal_phone:
+  3. persist session via storage adapter
+  4. Send alert to operator.owner_personal_phone:
 
-     "Ready to close:
-      Customer: {session.name or session.phone}
-      Looking for: {session.intent}
-      Last shown: {last product name and price}
-      What they said: "{triggering_message}"
+     "🛎 Customer ready to close:
+        Name: {session.name or session.phone}
+        Looking for: {session.intent}
+        Last shown: {last product name and price}
+        What they said: "{triggering_message}"
 
-      Reply here to message them from your shop number.
-      Or type a command:
-        resume — hand back to bot
-        handled — you are dealing with it"
+      Open thread: https://wa.me/{customer_phone_digits}
 
-  6. LLM then writes its natural closing message to the customer.
+      When done, reply here:
+        resume {phone}  — hand back to bot
+        handled {phone} — you are dealing with it
+        (omit {phone} if only one handoff is active)"
+
+     Include interactive buttons where supported:
+       [Resume AI]        → sends "resume {phone}"
+       [I'll handle this] → sends "handled {phone}"
+
+  5. LLM then writes its natural closing message to the customer.
      The handoff tool returns before the LLM writes this reply.
      Example: "I've passed your details to the team — they'll be in
                touch with you shortly!"
 
-OWNER RELAY (operator types in control thread while stage=HANDED_OFF):
-  Detected in owner_action_handler.py when:
-    Message from operator.owner_personal_phone
-    Message is not a recognised command
-    A session with active_handoff_phone exists for this operator
-
-  Action:
-    Forward operator's message to session.active_handoff_phone
-    via messaging_adapter.send_text(active_handoff_phone, text, operator)
-    Append forwarded message to session.history as role='assistant'
-    Persist session
-
-  IMPORTANT — concurrent handoff edge case:
-    Only one active_handoff_phone per operator at MVP.
-    If trigger_handoff fires for a second customer while relay is active:
-      Alert operator as normal (they get a second notification)
-      Set second customer's session.stage = HANDED_OFF
-      Do not overwrite active_handoff_phone (first relay stays active)
-      Operator must type "resume" or "handled" to clear first relay
-      before relay with second customer begins
-    Log a warning when this occurs.
+  NOTE on concurrent handoffs:
+    Multiple customers can be in HANDED_OFF simultaneously. There is no
+    shared "active relay" state to clash. The operator disambiguates with
+    {phone} in resume/handled commands.
 
 OWNER COMMANDS (in owner_action_handler.py):
   Incoming messages from operator.owner_personal_phone that are text commands.
-  Comparison: strip, lowercase.
+  Comparison: strip, lowercase. Phone argument normalised to E.164.
 
   "resume" or "resume {phone}":
-    If no active handoff and no phone specified: reply "No active handoff."
-    Set session.stage = CONSIDERING
-    Clear session.active_handoff_phone
-    Bot sends customer: "I'm still here if you'd like to continue browsing!"
-    If operator provided context in reply: prepend to session context.
-    Start 10-minute context window: operator can add more context,
-    then bot resumes. If 10 minutes pass with no more context: bot resumes.
+    Find HANDED_OFF session for this operator:
+      If {phone} provided: find session for that customer.
+      If not: if exactly one HANDED_OFF session exists, use it; else reply
+        "Please specify: resume {phone}. Active handoffs: {list}".
+    If no HANDED_OFF session: reply "No active handoff."
+    Set session.stage = CONSIDERING.
+    Persist session.
+    Bot sends the customer: "I'm still here if you'd like to continue
+      browsing!" (next time they message, bot responds normally).
 
-  "handled":
-    Set session.stage = OWNER_ACTIVE
-    Clear session.active_handoff_phone
-    Bot suppressed. Operator handles from their phone directly.
+  "handled" or "handled {phone}":
+    Same lookup rules as resume.
+    Set session.stage = OWNER_ACTIVE.
+    Persist session.
+    Bot suppressed for that customer (operator handles directly from
+    the shop's WhatsApp).
 
-  Unrecognised message while relay active:
-    Treat as relay message (forward to customer)
+  Unrecognised text in the control thread:
+    Reply: "Unrecognised command. Available: resume {phone}, handled {phone}."
+    Do NOT forward anywhere.
 
 HOLDING MESSAGE:
   While session.stage = HANDED_OFF and customer sends another message:
-    Check session.last_holding_sent
+    Check session.last_holding_sent.
     If None or > 1 hour ago:
       Send: "The team has been notified and will be with you shortly!"
-      Set session.last_holding_sent = now()
-    Else: do nothing (do not spam the customer)
+      Set session.last_holding_sent = now().
+    Else: do nothing (do not spam the customer).
 
 24-HOUR INACTIVITY REVERT:
   If session.stage = HANDED_OFF
   AND (now() - session.handed_off_at) > 24 hours
   AND customer sends a new message:
-    Set session.stage = CONSIDERING
-    Bot responds normally
+    Set session.stage = CONSIDERING.
+    Bot responds normally.
     Bot message: "I'm still here if you'd like to keep browsing!"
-    (This only fires if customer messages — bot never initiates)
+    (This only fires if customer messages — bot never initiates.)
 
-PASSIVE INTERRUPTION DETECTION:
+PASSIVE INTERRUPTION DETECTION (Mode 2 — the takeover path):
   In webhook receiver, from_me: true in a customer chat:
-    Find session for that chat (operator_id + chat_id phone)
-    If session exists: set stage = OWNER_ACTIVE
-    Log: owner_typed_in_customer_thread
-    Do not route to pipeline
+    Find session for that chat (operator_id + chat_id phone).
+    If session exists: set stage = OWNER_ACTIVE. Persist.
+    Log: owner_typed_in_customer_thread.
+    Do NOT route to the bot pipeline.
+
+  This is how operators reply to customers after receiving a handoff
+  alert: they tap the wa.me link, type in the shop's WhatsApp customer
+  thread, and the bot steps aside. No relay plumbing needed.
 
 ---
 
