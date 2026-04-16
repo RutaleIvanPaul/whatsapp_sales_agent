@@ -23,7 +23,6 @@ class Session:
     constraints: dict
     shown_product_ids: list[str]
     stage: Stage
-    active_handoff_phone: str | None
     handed_off_at: datetime | None
     last_holding_sent: datetime | None
     last_active: datetime

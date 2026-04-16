@@ -109,7 +109,6 @@ def main():
             constraints={"size": "42", "colour": "black"},
             shown_product_ids=["prod-1"],
             stage=Stage.EXPLORING,
-            active_handoff_phone=None,
             handed_off_at=None,
             last_holding_sent=None,
             last_active=now,
