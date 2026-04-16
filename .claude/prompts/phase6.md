@@ -57,7 +57,7 @@ Operator onboarding is scriptable.
   Logs: llm_cost_summary event with per-operator:
     total input_tokens, total output_tokens, vision_calls, estimated_cost_usd.
   Track cumulative tokens in memory (reset at midnight).
-  Estimated cost calculated from known OpenAI rates for configured models.
+  Estimated cost calculated from known Anthropic rates for configured models.
 
 ### 7. Full config validation (app/config.py)
   Validate ALL environment variables from S20.

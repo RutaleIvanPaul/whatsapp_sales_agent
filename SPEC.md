@@ -256,7 +256,7 @@ OPERATOR (app/models/operator.py):
       whapi_connected_phone: str | None # set after operator scans QR
       google_sheets_id: str
       luganda_canned_response: str      # operator-provided, never LLM-generated
-      llm_model: str                    # e.g. "gpt-4o"
+      llm_model: str                    # e.g. "claude-sonnet-4-6"
       status: OperatorStatus
       created_at: datetime
 
@@ -437,7 +437,7 @@ HANDLER — link.py:
 ## S8 — Language classifier
 
 FILE: app/input/language.py
-Single LLM call using CLASSIFIER_MODEL (gpt-4o-mini).
+Single LLM call using CLASSIFIER_MODEL (claude-haiku-4-5-20251001).
 
 PROMPT:
   System: "You are a language classifier. Reply with exactly one word."
@@ -948,10 +948,10 @@ app/main.py runs these in order. Any failure exits with a descriptive error.
        Fail startup if zero products load for any active operator.
 
   6. llm = LLMAdapter.from_env()
-       Initialise OpenAI client. Verify API key with a minimal test call.
+       Initialise Anthropic client. Verify API key with a minimal test call.
 
   7. vision = VisionAdapter.from_env()
-       Initialise (same OpenAI client, different model param).
+       Initialise (same Anthropic client, different model param).
 
   8. messaging = MessagingAdapter()
        No initialisation needed — tokens are per-operator, loaded per-call.
@@ -975,16 +975,16 @@ Required — startup fails if missing:
 
   WHAPI_PARTNER_TOKEN         Whapi Partner API bearer token
   WHAPI_PROJECT_ID            Whapi project ID for grouping channels
-  OPENAI_API_KEY              OpenAI API key (LLM + vision + classifier)
+  ANTHROPIC_API_KEY           Anthropic API key (LLM + vision + classifier)
   GOOGLE_CREDENTIALS_JSON     Base64-encoded service account JSON string
   STORAGE_URL                 e.g. sqlite:///salelular.db
   ENCRYPTION_KEY              32-byte base64 string for AES-256-GCM
 
 Optional with defaults:
 
-  LLM_MODEL                   Default: gpt-4o
-  VISION_MODEL                Default: gpt-4o
-  CLASSIFIER_MODEL            Default: gpt-4o-mini
+  LLM_MODEL                   Default: claude-sonnet-4-6
+  VISION_MODEL                Default: claude-sonnet-4-6
+  CLASSIFIER_MODEL            Default: claude-haiku-4-5-20251001
   BUFFER_DEBOUNCE_MS          Default: 3000
   BUFFER_RATE_LIMIT_S         Default: 8
   SESSION_EXPIRY_DAYS         Default: 7
@@ -1002,7 +1002,10 @@ Optional with defaults:
 These are deferred from MVP. Designed in, not built in.
 
   Voice note transcription
-    Implement app/input/voice.py using OpenAI Whisper.
+    Implement app/input/voice.py using a transcription service
+    (e.g. OpenAI Whisper API, Deepgram, or AssemblyAI). Anthropic does
+    not currently expose audio transcription, so this is the one place
+    we will introduce a second provider.
     Replace placeholder return with actual transcription call.
     No other changes — input processor already calls voice.py.
 

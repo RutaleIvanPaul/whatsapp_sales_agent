@@ -8,7 +8,7 @@ a test file for it.
 RULES:
 1. Test the PUBLIC interface only. Never test private functions.
 2. All external dependencies are mocked. Tests run without network access,
-   without a real database, without Whapi, without OpenAI.
+   without a real database, without Whapi, without Anthropic.
 3. Test the happy path first. Then test each failure mode.
 4. Test the edge cases from SPEC.md S18 that are relevant to this module.
 5. Test that adapter interfaces are satisfied (call the interface, not the implementation).

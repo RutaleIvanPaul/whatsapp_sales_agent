@@ -11,7 +11,7 @@ CHECK THESE IN ORDER:
 1. ADAPTER COMPLIANCE
    Does the proposed approach put external dependencies behind the adapter
    interface defined in CLAUDE.md? Business logic must never import from
-   implementation files (openai_adapter.py, whapi.py, sqlite_adapter.py).
+   implementation files (anthropic_adapter.py, whapi.py, sqlite_adapter.py).
    Any direct coupling is a no-go.
 
 2. WEBHOOK TIMING

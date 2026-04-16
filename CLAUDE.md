@@ -21,8 +21,8 @@ Read only the section you need. Never load the entire file at once.
 
 ## Current phase
 
-PHASE 3 — Webhook and Messaging
-Read .claude/prompts/phase3.md before doing anything else.
+PHASE 4 — Conversation Engine
+Read .claude/prompts/phase4.md before doing anything else.
 Update this line when advancing phases.
 
 ---
@@ -33,8 +33,8 @@ Update this line when advancing phases.
 - FastAPI + uvicorn
 - Whapi.cloud — linked-device WhatsApp gateway (hosted, per-operator tokens)
 - Google Sheets API — inventory source, read-only, single service account
-- OpenAI GPT-4o — conversation engine and vision (same API key)
-- OpenAI GPT-4o-mini — language classifier (same API key, cheaper model)
+- Anthropic Claude Sonnet 4.6 — conversation engine and vision (same API key)
+- Anthropic Claude Haiku 4.5 — language classifier (same API key, cheaper model)
 - RapidFuzz — in-memory fuzzy product search
 - SQLite — session and operator storage for MVP
 - asyncio.Queue — message queue for MVP
@@ -98,11 +98,11 @@ salelular/
 │   ├── adapters/
 │   │   ├── llm/
 │   │   │   ├── base.py
-│   │   │   ├── openai_adapter.py
+│   │   │   ├── anthropic_adapter.py
 │   │   │   └── factory.py
 │   │   ├── vision/
 │   │   │   ├── base.py
-│   │   │   ├── openai_adapter.py
+│   │   │   ├── anthropic_adapter.py
 │   │   │   └── factory.py
 │   │   ├── messaging/
 │   │   │   ├── base.py
@@ -156,7 +156,7 @@ ARCHITECTURE
    call. Maximum 5 products ever passed to the LLM at once.
 2. Every external dependency behind a swappable adapter. Business logic
    only imports from base classes or factories — never from implementation
-   files (openai_adapter.py, whapi.py, sqlite_adapter.py) directly.
+   files (anthropic_adapter.py, whapi.py, sqlite_adapter.py) directly.
 3. Messaging adapter always receives operator context. No global WhatsApp
    token. Per-operator channel token on every outbound send.
 4. Webhook receiver returns 200 OK within 5 seconds. All pipeline

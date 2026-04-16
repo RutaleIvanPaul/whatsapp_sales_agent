@@ -7,9 +7,11 @@ from fastapi import FastAPI
 
 from app.adapters.inventory.cache import InventoryCache
 from app.adapters.inventory.sheets import GoogleSheetsLoader, SheetsLoadError
+from app.adapters.llm import factory as llm_factory
 from app.adapters.messaging.whapi import WhapiMessagingAdapter
 from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
 from app.adapters.storage.sqlite_adapter import SqliteStorageAdapter
+from app.adapters.vision import factory as vision_factory
 from app.buffer.buffer import MessageBuffer
 from app.config import validate
 from app.models.operator import Operator
@@ -94,6 +96,11 @@ async def lifespan(app: FastAPI):
     messaging_adapter = WhapiMessagingAdapter(cfg.encryption_key)
     log("startup", phase="messaging_ready")
 
+    # --- Step 5b: LLM + vision adapters (Phase 4) ---
+    llm_adapter = llm_factory.from_config(cfg)
+    vision_adapter = vision_factory.from_config(cfg)
+    log("startup", phase="llm_ready", llm_model=cfg.llm_model, vision_model=cfg.vision_model)
+
     # --- Step 6: contacts cache + hourly refresh ---
     contacts_cache = ContactsCache(cfg.encryption_key)
     for op in operators:
@@ -110,7 +117,31 @@ async def lifespan(app: FastAPI):
     )
 
     async def flush_for_operator(payloads: list[dict], operator: Operator) -> None:
-        await pipeline_runner.run(payloads, operator, messaging_adapter)
+        # Per-operator inventory; if missing, fall back to first available cache
+        inv = inventories_by_operator_id.get(operator.operator_id)
+        if inv is None and inventories_by_operator_id:
+            inv = next(iter(inventories_by_operator_id.values()))
+        if inv is None:
+            log(
+                "error",
+                component="main",
+                error_type="no_inventory_for_operator",
+                operator_id=operator.operator_id,
+            )
+            return
+        await pipeline_runner.run(
+            payloads,
+            operator,
+            llm=llm_adapter,
+            vision=vision_adapter,
+            inventory=inv,
+            messaging=messaging_adapter,
+            storage=storage_adapter,
+            anthropic_api_key=cfg.anthropic_api_key,
+            classifier_model=cfg.classifier_model,
+            max_history_turns=cfg.max_history_turns,
+            session_expiry_days=cfg.session_expiry_days,
+        )
 
     worker = QueueWorker(message_queue, buffer, flush_for_operator)
     _spawn(worker.run())
