@@ -26,6 +26,14 @@ class Config:
     whapi_health_check_interval_s: int
     port: int
 
+    # LLM (Phase 4)
+    anthropic_api_key: str
+    llm_model: str
+    vision_model: str
+    classifier_model: str
+    max_history_turns: int
+    session_expiry_days: int
+
 
 def validate() -> Config:
     load_dotenv()
@@ -68,6 +76,13 @@ def validate() -> Config:
     whapi_health_check_interval_s = int(os.getenv("WHAPI_HEALTH_CHECK_INTERVAL_S", "1800"))
     port = int(os.getenv("PORT", "8000"))
 
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    llm_model = os.getenv("LLM_MODEL", "claude-sonnet-4-6")
+    vision_model = os.getenv("VISION_MODEL", "claude-sonnet-4-6")
+    classifier_model = os.getenv("CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
+    max_history_turns = int(os.getenv("MAX_HISTORY_TURNS", "10"))
+    session_expiry_days = int(os.getenv("SESSION_EXPIRY_DAYS", "7"))
+
     return Config(
         encryption_key=encryption_key,
         storage_url=storage_url,
@@ -81,6 +96,12 @@ def validate() -> Config:
         buffer_rate_limit_s=buffer_rate_limit_s,
         whapi_health_check_interval_s=whapi_health_check_interval_s,
         port=port,
+        anthropic_api_key=anthropic_api_key,
+        llm_model=llm_model,
+        vision_model=vision_model,
+        classifier_model=classifier_model,
+        max_history_turns=max_history_turns,
+        session_expiry_days=session_expiry_days,
     )
 
 

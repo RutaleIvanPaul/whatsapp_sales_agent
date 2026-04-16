@@ -1,41 +1,145 @@
 from __future__ import annotations
 
+from datetime import datetime
+
+from app.adapters.inventory.base import InventoryAdapter
+from app.adapters.llm.base import LLMAdapter
 from app.adapters.messaging.base import MessagingAdapter
+from app.adapters.storage.base import StorageAdapter
+from app.adapters.vision.base import VisionAdapter
+from app.engine import conversation
+from app.input import language as language_mod
+from app.input import processor
 from app.models.operator import Operator
+from app.models.session import Session, Stage
+from app.pipeline import response_builder
 from app.utils.log import log
 from app.utils.phone import from_whapi, hash_for_log
 
-STUB_REPLY = "Salelular is listening. Full AI responses coming soon."
+MAX_ALERT_CHARS = 200
 
 
 async def run(
     payloads: list[dict],
     operator: Operator,
-    messaging_adapter: MessagingAdapter,
+    *,
+    llm: LLMAdapter,
+    vision: VisionAdapter,
+    inventory: InventoryAdapter,
+    messaging: MessagingAdapter,
+    storage: StorageAdapter,
+    anthropic_api_key: str,
+    classifier_model: str,
+    max_history_turns: int,
+    session_expiry_days: int,
 ) -> None:
-    """Phase 3 placeholder. Full pipeline (input processor, LLM, tools,
-    response builder) lands in Phase 4."""
+    """Phase 4 full pipeline.
 
+    payloads → unified_text → language gate → conversation engine →
+    response builder → outbound WhatsApp messages.
+    """
     if not payloads:
         return
 
-    first_msg = payloads[0].get("messages", [])
-    if not first_msg:
-        return
-    raw_phone = first_msg[0].get("from", "")
+    raw_phone = (payloads[0].get("messages") or [{}])[0].get("from", "")
     if not raw_phone:
+        log("error", component="runner", error_type="missing_from")
         return
 
     try:
         sender_phone = from_whapi(raw_phone)
     except ValueError:
+        log("error", component="runner", error_type="invalid_phone")
         return
 
-    log(
-        "pipeline_run_stub",
-        operator_id=operator.operator_id,
-        phone_hash=hash_for_log(sender_phone),
-        message_count=len(payloads),
+    phone_hash = hash_for_log(sender_phone)
+
+    # 1. Input processor — text/image/voice/link → unified_text
+    unified = await processor.process(payloads, vision, inventory)
+    if not unified.strip():
+        log("pipeline_skipped", reason="empty_unified_text", phone_hash=phone_hash)
+        return
+
+    # 2. Language gate (Anthropic Haiku)
+    lang = await language_mod.classify(unified, anthropic_api_key, classifier_model)
+    if lang in ("LUGANDA", "UNKNOWN"):
+        await _send_canned_and_alert(
+            sender_phone, unified, lang, operator, messaging, phone_hash
+        )
+        return
+
+    # 3. Load or create session
+    session = storage.get(operator.operator_id, sender_phone)
+    if session is None:
+        now = datetime.utcnow()
+        session = Session(
+            operator_id=operator.operator_id,
+            phone=sender_phone,
+            name=None,
+            language=lang.lower() if lang in ("ENGLISH", "MIXED") else None,
+            history=[],
+            intent=None,
+            constraints={},
+            shown_product_ids=[],
+            stage=Stage.EXPLORING,
+            handed_off_at=None,
+            last_holding_sent=None,
+            last_active=now,
+            created_at=now,
+        )
+
+    # 4. Run the conversation engine
+    reply_text, products = await conversation.run(
+        operator=operator,
+        session=session,
+        unified_text=unified,
+        llm=llm,
+        inventory=inventory,
+        storage=storage,
+        max_history_turns=max_history_turns,
+        session_expiry_days=session_expiry_days,
     )
 
-    await messaging_adapter.send_text(sender_phone, STUB_REPLY, operator)
+    # 5. Send the reply (text + up to 3 product images)
+    await response_builder.send_response(
+        sender_phone, reply_text, products, operator, messaging
+    )
+
+
+async def _send_canned_and_alert(
+    sender_phone: str,
+    unified_text: str,
+    detected_language: str,
+    operator: Operator,
+    messaging: MessagingAdapter,
+    phone_hash: str,
+) -> None:
+    """For LUGANDA / UNKNOWN: reply with operator's canned response,
+    then alert the operator with a snippet of the original message."""
+    canned = (
+        operator.luganda_canned_response
+        or "Webale okutuwa obubaka! / Thank you for your message — we will be in touch shortly."
+    )
+    await messaging.send_text(sender_phone, canned, operator)
+
+    snippet = unified_text[:MAX_ALERT_CHARS]
+    alert = (
+        f"Customer message in {detected_language.lower()} from {sender_phone}:\n"
+        f"\"{snippet}\""
+    )
+    try:
+        await messaging.send_text(operator.owner_personal_phone, alert, operator)
+    except Exception as e:
+        log(
+            "error",
+            component="runner",
+            error_type="alert_send_failed",
+            message=type(e).__name__,
+        )
+
+    log(
+        "language_escalated",
+        operator_id=operator.operator_id,
+        phone_hash=phone_hash,
+        language=detected_language,
+    )
