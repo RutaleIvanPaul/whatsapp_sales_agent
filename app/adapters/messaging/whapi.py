@@ -36,9 +36,11 @@ class WhapiMessagingAdapter(MessagingAdapter):
     ) -> None:
         token = decrypt(operator.whapi_channel_token, self._key)
         url = f"{WHAPI_BASE}/messages/image?token={token}"
+        # Whapi /messages/image expects `media` (URL or base64), not `image`.
+        # Per Whapi 400 error: "/body/media must have required property 'media'".
         body = {
             "to": f"{to_whapi(phone)}@s.whatsapp.net",
-            "image": {"url": image_url},
+            "media": image_url,
             "caption": caption,
         }
         await self._send_with_retry(

@@ -4,7 +4,7 @@ import copy
 from datetime import datetime
 
 from app.adapters.inventory.base import InventoryAdapter
-from app.adapters.llm.base import LLMAdapter, LLMResponse, LLMTimeoutError
+from app.adapters.llm.base import LLMAdapter, LLMResponse, LLMTimeoutError, ToolResult
 from app.adapters.storage.base import StorageAdapter
 from app.engine import system_prompt as system_prompt_mod
 from app.engine import tools as tools_mod
@@ -67,17 +67,42 @@ async def run(
                 FALLBACK_TIMEOUT_REPLY, products_shown_this_turn, max_history_turns,
             )
         except Exception as e:
+            err_msg = str(e)[:300]
             log(
                 "error",
                 component="conversation",
                 error_type=type(e).__name__,
-                message=str(e)[:200],
+                message=err_msg,
                 operator_id=operator.operator_id,
+                round=round_idx,
             )
-            return _persist_and_return(
-                session, storage, operator, unified_text,
-                FALLBACK_GENERIC_REPLY, products_shown_this_turn, max_history_turns,
-            )
+            # Recovery: some providers (notably Groq + Llama) reject the
+            # request when the model produces malformed tool-call args.
+            # Retry once without tools so the model can at least reply
+            # with plain text.
+            if _is_tool_use_failure(err_msg):
+                try:
+                    response = await llm.chat(
+                        messages=messages, tools=[], system=system,
+                    )
+                    last_response = response
+                    log(
+                        "llm_recovered_no_tools",
+                        operator_id=operator.operator_id,
+                        round=round_idx,
+                    )
+                except Exception:
+                    return _persist_and_return(
+                        session, storage, operator, unified_text,
+                        FALLBACK_GENERIC_REPLY, products_shown_this_turn,
+                        max_history_turns,
+                    )
+            else:
+                return _persist_and_return(
+                    session, storage, operator, unified_text,
+                    FALLBACK_GENERIC_REPLY, products_shown_this_turn,
+                    max_history_turns,
+                )
 
         if not response.tool_calls:
             reply = response.text or FALLBACK_GENERIC_REPLY
@@ -86,17 +111,19 @@ async def run(
                 reply, products_shown_this_turn, max_history_turns,
             )
 
-        # Append the assistant message verbatim — preserves tool_use blocks
-        messages.append({"role": "assistant", "content": response.raw_content})
+        # Append the assistant message verbatim — adapter-shaped, preserves
+        # tool_use blocks (Anthropic) or tool_calls list (OpenAI/Groq)
+        messages.append(response.assistant_message)
 
-        # Execute each tool call and collect results
-        tool_results = []
+        # Execute each tool call and collect provider-neutral results
+        tool_results: list[ToolResult] = []
         for tc in response.tool_calls:
             log(
                 "tool_called",
                 operator_id=operator.operator_id,
                 tool_name=tc["name"],
             )
+            is_error = False
             try:
                 result_str = await _dispatch_tool(
                     tc, session, operator, inventory, unified_text,
@@ -110,14 +137,16 @@ async def run(
                     error_type=type(e).__name__,
                 )
                 result_str = f"Tool error: {type(e).__name__}"
+                is_error = True
 
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tc["id"],
-                "content": result_str,
-            })
+            tool_results.append(ToolResult(
+                tool_use_id=tc["id"],
+                content=result_str,
+                is_error=is_error,
+            ))
 
-        messages.append({"role": "user", "content": tool_results})
+        # Adapter knows how to shape these into the next-turn message(s)
+        messages.extend(llm.make_tool_result_messages(tool_results))
 
     # Loop exhausted without a text reply
     log(
@@ -133,6 +162,20 @@ async def run(
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+# Substrings that indicate the provider rejected the request because the
+# model emitted a malformed tool call (Groq + Llama is the common case).
+_TOOL_USE_FAILURE_HINTS = (
+    "tool_use_failed",
+    "tool call validation failed",
+    "did not match schema",
+)
+
+
+def _is_tool_use_failure(error_msg: str) -> bool:
+    lowered = error_msg.lower()
+    return any(hint in lowered for hint in _TOOL_USE_FAILURE_HINTS)
+
 
 async def _dispatch_tool(
     tc: dict,

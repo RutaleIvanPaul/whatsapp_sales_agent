@@ -9,7 +9,14 @@ from app.models.product import Product
 from app.models.session import Session, Stage
 from app.utils.log import log
 
-# ── Tool schemas (Anthropic format — `input_schema` is JSON Schema) ──────────
+# ── Tool schemas (provider-neutral) ──────────────────────────────────────────
+#
+# Stored as {name, description, parameters (JSON Schema)}. Each LLM adapter
+# translates this into its provider-native shape:
+#   - Anthropic: rename `parameters` → `input_schema`
+#   - Groq/OpenAI: wrap in {"type": "function", "function": {...}}
+#
+# This keeps engine/tools.py free of provider-specific formatting.
 
 SEARCH_PRODUCTS_SCHEMA = {
     "name": "search_products",
@@ -18,7 +25,7 @@ SEARCH_PRODUCTS_SCHEMA = {
         "5 matching products with name, price, description, and image URL. "
         "Excludes products already shown to this customer."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "query": {
@@ -33,22 +40,24 @@ SEARCH_PRODUCTS_SCHEMA = {
 UPDATE_SESSION_SCHEMA = {
     "name": "update_session",
     "description": (
-        "Persist what you have learned about this customer. Call this before "
-        "writing your reply whenever you learn a new fact (name, preference, "
-        "intent, etc.)."
+        "Persist what you have learned about this customer. Only call this "
+        "when you actually learn a new fact. Provide the `fields` object with "
+        "any subset of: name, language, intent, constraints, shown_product_ids."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "fields": {
                 "type": "object",
                 "description": (
-                    "Subset of: name, language, intent, constraints, stage, "
-                    "shown_product_ids."
+                    "Subset of: name, language, intent, constraints, "
+                    "shown_product_ids. Example: {\"name\": \"Sarah\"}."
                 ),
             }
         },
-        "required": ["fields"],
+        # NOTE: `fields` intentionally NOT required. Some models (e.g. Llama
+        # via Groq) sometimes call this tool with no args; making it required
+        # produces a hard 400 from Groq. We accept the call and no-op.
     },
 }
 
@@ -58,7 +67,7 @@ TRIGGER_HANDOFF_SCHEMA = {
         "Alert the operator that this customer is ready to buy. Call when you "
         "detect strong buying intent."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "summary": {
@@ -130,6 +139,8 @@ def handle_search_products(
 
 
 def handle_update_session(fields: dict, session: Session) -> str:
+    if not fields:
+        return json.dumps({"applied": [], "rejected": [], "note": "no fields provided"})
     if not isinstance(fields, dict):
         return "Error: fields must be an object."
 

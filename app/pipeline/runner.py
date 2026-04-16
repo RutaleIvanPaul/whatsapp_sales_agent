@@ -24,12 +24,11 @@ async def run(
     operator: Operator,
     *,
     llm: LLMAdapter,
+    classifier_llm: LLMAdapter,
     vision: VisionAdapter,
     inventory: InventoryAdapter,
     messaging: MessagingAdapter,
     storage: StorageAdapter,
-    anthropic_api_key: str,
-    classifier_model: str,
     max_history_turns: int,
     session_expiry_days: int,
 ) -> None:
@@ -60,8 +59,8 @@ async def run(
         log("pipeline_skipped", reason="empty_unified_text", phone_hash=phone_hash)
         return
 
-    # 2. Language gate (Anthropic Haiku)
-    lang = await language_mod.classify(unified, anthropic_api_key, classifier_model)
+    # 2. Language gate (provider-agnostic — uses classifier_llm)
+    lang = await language_mod.classify(unified, classifier_llm)
     if lang in ("LUGANDA", "UNKNOWN"):
         await _send_canned_and_alert(
             sender_phone, unified, lang, operator, messaging, phone_hash
