@@ -31,22 +31,34 @@ class InventoryCache(InventoryAdapter):
         if not query:
             return []
 
-        query_lower = query.lower()
+        # Build candidate queries: the full query plus progressively shorter
+        # sub-queries (bigrams of the words). Long vision descriptions produce
+        # verbose queries that score low on partial_ratio; shorter fragments
+        # match much better against index strings.
+        words = query.lower().split()
+        sub_queries = [query.lower()]
+        if len(words) >= 3:
+            for i in range(len(words) - 1):
+                sub_queries.append(f"{words[i]} {words[i + 1]}")
+
         shown_set = set(shown_ids)
-        candidates: list[tuple[float, Product]] = []
+        candidates: dict[str, tuple[float, Product]] = {}
 
         with self._lock:
-            for index_str, product in self._index:
-                if not product.available:
-                    continue
-                if product.id in shown_set:
-                    continue
-                score = fuzz.partial_ratio(query_lower, index_str)
-                if score >= self._threshold:
-                    candidates.append((score, product))
+            for sq in sub_queries:
+                for index_str, product in self._index:
+                    if not product.available:
+                        continue
+                    if product.id in shown_set:
+                        continue
+                    score = fuzz.partial_ratio(sq, index_str)
+                    if score >= self._threshold:
+                        existing = candidates.get(product.id)
+                        if existing is None or score > existing[0]:
+                            candidates[product.id] = (score, product)
 
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return [p for _, p in candidates[:5]]
+        ranked = sorted(candidates.values(), key=lambda x: x[0], reverse=True)
+        return [p for _, p in ranked[:5]]
 
     def get_all(self) -> list[Product]:
         with self._lock:

@@ -14,7 +14,7 @@ from app.models.operator import Operator
 from app.models.session import Session, Stage
 from app.pipeline import response_builder
 from app.utils.log import log
-from app.utils.phone import from_whapi, hash_for_log
+from app.utils.phone import from_whapi, hash_for_log, to_whapi
 
 MAX_ALERT_CHARS = 200
 
@@ -123,8 +123,12 @@ async def _send_canned_and_alert(
 
     snippet = unified_text[:MAX_ALERT_CHARS]
     alert = (
-        f"Customer message in {detected_language.lower()} from {sender_phone}:\n"
-        f"\"{snippet}\""
+        f"Hi {operator.owner_name}, a customer sent a message that "
+        f"appears to be in {detected_language.lower()}.\n\n"
+        f"Your canned response was sent automatically. Here's what "
+        f"they said:\n\"{snippet}\"\n\n"
+        f"Tap this link to reply directly: "
+        f"https://wa.me/{to_whapi(sender_phone)}"
     )
     try:
         await messaging.send_text(operator.owner_personal_phone, alert, operator)

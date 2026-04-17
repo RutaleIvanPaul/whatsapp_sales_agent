@@ -43,12 +43,21 @@ class WhapiMessagingAdapter(MessagingAdapter):
             "media": image_url,
             "caption": caption,
         }
+        # Extract product name from caption (first line) for error context
+        product_hint = caption.split("\n")[0] if caption else "unknown product"
         await self._send_with_retry(
-            url=url, json=body, operator=operator, phone=phone, kind="image"
+            url=url, json=body, operator=operator, phone=phone, kind="image",
+            context=f"Product: {product_hint}."
         )
 
     async def _send_with_retry(
-        self, url: str, json: dict, operator: Operator, phone: str, kind: str
+        self,
+        url: str,
+        json: dict,
+        operator: Operator,
+        phone: str,
+        kind: str,
+        context: str = "",
     ) -> None:
         phone_hash = hash_for_log(phone)
         last_status: int | None = None
@@ -87,14 +96,34 @@ class WhapiMessagingAdapter(MessagingAdapter):
                     error_code=last_error or "unknown",
                 )
 
-        # All attempts failed — alert operator's personal phone, no retry on alert
-        await self._send_alert_noretry(
-            operator=operator,
-            message=(
-                f"Salelular: failed to send {kind} message to a customer after "
-                f"3 attempts. Last error: {last_error}"
-            ),
-        )
+        # All attempts failed — alert operator with human-friendly message
+        if kind == "image" and "media link is not available" in (last_error or ""):
+            alert = (
+                f"Hi {operator.owner_name}, Salelular couldn't send a product "
+                f"image to a customer.\n\n"
+                f"The image URL in your product sheet appears to be broken or "
+                f"expired. {context}\n\n"
+                f"What to do: Open your Google Sheet, find the product, and "
+                f"replace the image_url with a fresh public link."
+            )
+        elif kind == "image":
+            alert = (
+                f"Hi {operator.owner_name}, Salelular couldn't send a product "
+                f"image to a customer after 3 tries. {context}\n\n"
+                f"This is usually a temporary network issue. If it keeps "
+                f"happening, check that the image URL in your product sheet "
+                f"is still accessible."
+            )
+        else:
+            alert = (
+                f"Hi {operator.owner_name}, Salelular couldn't deliver a "
+                f"message to a customer after 3 tries.\n\n"
+                f"This is usually a temporary network issue. The customer's "
+                f"message was received but the reply didn't go through. "
+                f"They may try again."
+            )
+
+        await self._send_alert_noretry(operator=operator, message=alert)
 
     async def _send_alert_noretry(self, operator: Operator, message: str) -> None:
         try:
