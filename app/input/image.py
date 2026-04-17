@@ -11,7 +11,8 @@ async def describe(payload_msg: dict, vision_adapter: VisionAdapter) -> str:
         link = (payload_msg.get("image") or {}).get("link", "")
         if not link:
             return FALLBACK
-        return await vision_adapter.describe(link)
+        description = await vision_adapter.describe(link)
+        return description
     except Exception as e:
         log(
             "error",

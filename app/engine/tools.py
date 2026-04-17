@@ -105,7 +105,14 @@ def handle_search_products(
 ) -> tuple[str, list[Product]]:
     """Returns (string for LLM, products for response builder)."""
     safe_query = (query or "")[:MAX_QUERY_CHARS]
+    log("search_query", query=safe_query[:100])
     products = inventory.search(safe_query, session.shown_product_ids)
+
+    # If search returns nothing with exclusions, retry without — the customer
+    # may be explicitly asking to see products again (S10: "never show again
+    # *unprompted*", but an explicit ask overrides the exclusion).
+    if not products:
+        products = inventory.search(safe_query, [])
 
     # Track shown ids on the session so future searches exclude them
     new_ids = [p.id for p in products if p.id not in session.shown_product_ids]

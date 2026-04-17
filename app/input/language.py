@@ -54,7 +54,8 @@ async def classify(text: str, llm: LLMAdapter) -> str:
     latency_ms = int((time.monotonic() - start) * 1000)
 
     raw = (response.text or "").strip().upper()
-    label = raw.split()[0] if raw else "ENGLISH"
+    # Strip punctuation — some models append periods (e.g. "ENGLISH.")
+    label = raw.split()[0].rstrip(".,;:!?") if raw else "ENGLISH"
     if label not in VALID_LABELS:
         log(
             "language_unrecognised",

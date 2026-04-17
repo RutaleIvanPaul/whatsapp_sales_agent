@@ -33,8 +33,10 @@ Update this line when advancing phases.
 - FastAPI + uvicorn
 - Whapi.cloud — linked-device WhatsApp gateway (hosted, per-operator tokens)
 - Google Sheets API — inventory source, read-only, single service account
-- Anthropic Claude Sonnet 4.6 — conversation engine and vision (same API key)
-- Anthropic Claude Haiku 4.5 — language classifier (same API key, cheaper model)
+- LLM provider is configurable via LLM_PROVIDER env var (see DECISIONS.md)
+  Default: Anthropic Claude Sonnet 4.6 (conversation + vision)
+  Alternative: Groq (Llama models) — switching is a config change, no code changes
+- Language classifier uses the same provider, cheaper model (Haiku 4.5 / llama-3.1-8b)
 - RapidFuzz — in-memory fuzzy product search
 - SQLite — session and operator storage for MVP
 - asyncio.Queue — message queue for MVP
@@ -190,15 +192,18 @@ CODE QUALITY
 
 ## Adapter interfaces — signatures never change
 
+All I/O adapters are async (FastAPI event loop requirement — see DECISIONS.md).
+
 class LLMAdapter(ABC):
-    def chat(self, messages: list[dict], tools: list[dict], system: str) -> LLMResponse
+    async def chat(self, messages: list[dict], tools: list[dict], system: str, max_tokens: int = 1024) -> LLMResponse
+    def make_tool_result_messages(self, results: list[ToolResult]) -> list[dict]
 
 class VisionAdapter(ABC):
-    def describe(self, image_url: str) -> str
+    async def describe(self, image_url: str) -> str
 
 class MessagingAdapter(ABC):
-    def send_text(self, phone: str, text: str, operator: Operator) -> None
-    def send_image(self, phone: str, image_url: str, caption: str, operator: Operator) -> None
+    async def send_text(self, phone: str, text: str, operator: Operator) -> None
+    async def send_image(self, phone: str, image_url: str, caption: str, operator: Operator) -> None
 
 class InventoryAdapter(ABC):
     def search(self, query: str, shown_ids: list[str]) -> list[Product]

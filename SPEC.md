@@ -200,8 +200,10 @@ SENDING MESSAGES:
   Image + caption:
     POST https://gate.whapi.cloud/messages/image?token={channel_token}
     { "to": "256700123456@s.whatsapp.net",
-      "image": { "url": "https://public-image-url/product.jpg" },
+      "media": "https://public-image-url/product.jpg",
       "caption": "Nike Air Zoom\n85,000 UGX\nLightweight running shoe" }
+    NOTE: The field is `media` (string URL), not `image.url`. Whapi rejects
+    the nested object form with HTTP 400.
 
   typing_time (integer, seconds): Whapi shows a typing indicator before
   sending. Makes the bot feel human. This is a Whapi parameter — not
@@ -213,6 +215,36 @@ RETRY ON SEND FAILURE:
   Attempt 3: wait 2 seconds
   After 3 failures: log error with full payload. Alert operator.
   Do not retry the alert itself.
+
+OPERATOR ALERT CONTENT RULES:
+  All alerts sent to operator.owner_personal_phone must follow these rules:
+  1. Address the operator by name ("Hi {owner_name}, ...")
+  2. Explain what happened in plain non-technical language
+  3. Tell the operator what to do about it (specific actionable steps)
+  4. Include a wa.me link where the operator needs to act on a customer
+  5. Include product names when the issue is product-specific
+  6. Never expose raw error codes, stack traces, or technical identifiers
+  7. Never expose raw customer phone numbers — use wa.me links instead
+
+  Alert types and their content:
+    Image URL broken:
+      Explain that a product image couldn't be sent, name the product,
+      tell operator to update the image_url in their Google Sheet.
+    Image send (network):
+      Explain temporary failure, name the product, suggest checking
+      the image URL if it keeps happening.
+    Text send failed:
+      Explain the reply didn't go through, reassure that the customer's
+      message was received, note they may try again.
+    Language escalation:
+      Name the detected language, include a snippet of the message,
+      provide a wa.me link to reply directly.
+    Session disconnect:
+      Explain the bot went offline, give step-by-step reconnection
+      instructions (WhatsApp > Linked Devices > QR code).
+    Handoff alert:
+      Customer name, intent, product context, wa.me link to the
+      customer thread, command hints. (Defined in S14.)
 
 SESSION HEALTH MONITORING:
   users.delete webhook = session expired or manually disconnected.
@@ -334,6 +366,16 @@ PROCESSING ORDER — every step must pass before the next:
 The receiver must complete within 5 seconds or Whapi retries.
 Steps 1-10 are fast (in-memory lookups only). The queue handles everything else.
 
+PHONE NUMBER FORMAT NOTE:
+  Whapi delivers the `from` field as bare international digits without a
+  `+` prefix (e.g. "256705878284"). All business logic uses canonical
+  +E.164 ("+256705878284"). Convert at the boundary using the named
+  helpers in app/utils/phone.py:
+    from_whapi(raw) → +E.164   (also strips @s.whatsapp.net suffixes)
+    to_whapi(e164)  → bare digits (for outbound `to` field — Whapi
+                      rejects the `+` with HTTP 400)
+  See DECISIONS.md for the design rationale.
+
 ---
 
 ## S5 — Async queue and worker
@@ -449,7 +491,9 @@ ROUTING:
   ENGLISH  → continue to conversation engine
   MIXED    → continue to conversation engine
   LUGANDA  → send operator.luganda_canned_response to customer
-              send alert to operator.owner_personal_phone with raw text
+              send alert to operator per OPERATOR ALERT CONTENT RULES (S2):
+                address by name, include message snippet, provide wa.me
+                link to reply directly. No raw phone numbers.
               stop — do not call conversation engine
   UNKNOWN  → same as LUGANDA
   failure  → default to ENGLISH, log warning, continue
@@ -562,17 +606,30 @@ search_products:
 
 update_session:
   Description: Persist what you have learned about this customer.
-               Call this before writing your reply whenever you learn
-               something new.
-  Parameters:  fields (object) — any subset of:
-               name, language, intent, constraints, stage,
-               shown_product_ids
+               Only call when you actually learn a new fact.
+  Parameters:  fields (object, OPTIONAL) — any subset of:
+               name, language, intent, constraints, shown_product_ids
+               NOTE: fields is intentionally not required in the JSON
+               Schema. Some models (Llama via Groq) call this tool with
+               no arguments; making it required produces a hard 400.
+               The handler no-ops when fields are empty.
 
 trigger_handoff:
   Description: Alert the operator that this customer is ready to buy.
                Call this when you detect buying intent.
   Parameters:  summary (string) — plain English brief for the operator:
                what the customer wants, what was shown, what they said
+
+TOOL RESULT MESSAGE SHAPE (LLMAdapter.make_tool_result_messages):
+  After executing tool calls, the conversation engine must pass results
+  back to the model. The message shape differs by provider:
+    - Anthropic: ONE user message containing all tool_result content blocks
+      [{"type": "tool_result", "tool_use_id": ..., "content": ...}]
+    - OpenAI/Groq: separate "tool" role messages, one per tool_call_id
+      {"role": "tool", "tool_call_id": ..., "content": ...}
+  This incompatibility is encapsulated in LLMAdapter.make_tool_result_messages()
+  so the conversation engine never sees provider-specific formatting.
+  See DECISIONS.md for the rationale behind this design.
 
 ---
 
@@ -614,8 +671,12 @@ cache.py — in-memory index:
 
   search(query, shown_ids):
     Acquire lock
-    For each (index_str, product) in index:
-      score = rapidfuzz.fuzz.partial_ratio(query.lower(), index_str)
+    Build sub-queries: the full query, plus all consecutive word pairs
+    (bigrams) if the query has 3+ words. Vision descriptions produce
+    verbose queries that score low as a whole but contain strong 2-word
+    fragments. See DECISIONS.md for the rationale.
+    For each sub-query, for each (index_str, product) in index:
+      score = rapidfuzz.fuzz.partial_ratio(sub_query, index_str)
       if score >= SEARCH_THRESHOLD and product.available
          and product.id not in shown_ids:
         add to results
@@ -975,16 +1036,27 @@ Required — startup fails if missing:
 
   WHAPI_PARTNER_TOKEN         Whapi Partner API bearer token
   WHAPI_PROJECT_ID            Whapi project ID for grouping channels
-  ANTHROPIC_API_KEY           Anthropic API key (LLM + vision + classifier)
+  LLM_API_KEY                 API key for the configured LLM provider.
+                              Falls back to ANTHROPIC_API_KEY if unset.
   GOOGLE_CREDENTIALS_JSON     Base64-encoded service account JSON string
   STORAGE_URL                 e.g. sqlite:///salelular.db
   ENCRYPTION_KEY              32-byte base64 string for AES-256-GCM
 
-Optional with defaults:
+LLM provider configuration:
 
-  LLM_MODEL                   Default: claude-sonnet-4-6
-  VISION_MODEL                Default: claude-sonnet-4-6
-  CLASSIFIER_MODEL            Default: claude-haiku-4-5-20251001
+  LLM_PROVIDER                "anthropic" or "groq". Default: anthropic
+  LLM_API_KEY                 API key for the conversation LLM provider
+  LLM_MODEL                   Default: claude-sonnet-4-6 (anthropic)
+                               or openai/gpt-oss-120b (groq)
+  VISION_PROVIDER             Default: same as LLM_PROVIDER
+  VISION_API_KEY              Default: same as LLM_API_KEY
+  VISION_MODEL                Default: claude-sonnet-4-6 (anthropic)
+                               or meta-llama/llama-4-scout-17b-16e-instruct (groq)
+  CLASSIFIER_MODEL            Default: claude-haiku-4-5-20251001 (anthropic)
+                               or llama-3.1-8b-instant (groq)
+  ANTHROPIC_API_KEY           Legacy alias — read as fallback for LLM_API_KEY
+
+Optional with defaults:
   BUFFER_DEBOUNCE_MS          Default: 3000
   BUFFER_RATE_LIMIT_S         Default: 8
   SESSION_EXPIRY_DAYS         Default: 7
