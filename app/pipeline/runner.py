@@ -87,13 +87,48 @@ async def run(
             created_at=now,
         )
 
-    # 4. Run the conversation engine
+    # 4. Check handoff / owner-active stages before running engine
+    if session.stage == Stage.OWNER_ACTIVE:
+        log("pipeline_skipped", reason="owner_active", phone_hash=phone_hash)
+        return
+
+    if session.stage == Stage.HANDED_OFF:
+        if session.handed_off_at:
+            handed_off_s = (datetime.utcnow() - session.handed_off_at).total_seconds()
+            if handed_off_s > 86400:
+                # 24-hour inactivity revert
+                session.stage = Stage.CONSIDERING
+                session.last_active = datetime.utcnow()
+                storage.set(operator.operator_id, sender_phone, session)
+                # Prepend "still here" — fall through to conversation engine
+                unified = "I'm still here if you'd like to keep browsing! " + unified
+                log("handoff_reverted_24h", phone_hash=phone_hash,
+                    operator_id=operator.operator_id)
+            else:
+                # Holding message (once per hour)
+                now = datetime.utcnow()
+                should_send = (
+                    session.last_holding_sent is None
+                    or (now - session.last_holding_sent).total_seconds() > 3600
+                )
+                if should_send:
+                    await messaging.send_text(
+                        sender_phone,
+                        "The team has been notified and will be with you shortly!",
+                        operator,
+                    )
+                    session.last_holding_sent = now
+                    storage.set(operator.operator_id, sender_phone, session)
+                return  # Do NOT run conversation engine
+
+    # 5. Run the conversation engine
     reply_text, products = await conversation.run(
         operator=operator,
         session=session,
         unified_text=unified,
         llm=llm,
         inventory=inventory,
+        messaging=messaging,
         storage=storage,
         max_history_turns=max_history_turns,
         session_expiry_days=session_expiry_days,

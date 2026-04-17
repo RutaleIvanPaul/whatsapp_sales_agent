@@ -163,3 +163,42 @@ which is both unhelpful and a privacy concern.
 6. No raw error codes, stack traces, or technical identifiers
 
 **Date:** Phase 4 edge-case sweep (April 2026)
+
+---
+
+## 6. Bot-sent echo filtering (sent_tracker)
+
+**Decision:** Track every message ID returned by the Whapi send API in a
+TTL-expiring set (`app/utils/sent_tracker.py`). When a `from_me: true`
+webhook arrives, check the set: if the ID is present, it's a bot echo
+(ignore). If absent, it's genuine operator typing (route to
+`owner_action_handler`).
+
+**Why this was needed:** Whapi fires `from_me: true` for ALL messages
+sent from the linked WhatsApp number — whether sent by the bot via
+the API or by the operator physically typing on their phone. Without
+filtering, every bot reply triggered `owner_typed_in_customer_thread`,
+which set `session.stage = OWNER_ACTIVE`, permanently silencing the bot
+after the first reply.
+
+**Why not a stage-based filter:** The original fix was to only trigger
+passive interruption when `session.stage == HANDED_OFF`. This was
+rejected because the operator should be able to interrupt at any time
+(e.g., typing in a customer thread during EXPLORING to correct the bot),
+not just after a handoff alert.
+
+**TECH DEBT — missed ID capture:** If the Whapi API accepts our POST
+but we fail to read the response body (network drop after server-side
+accept, response parsing error), the message ID won't be captured. The
+echo will then be treated as operator typing, causing a false
+OWNER_ACTIVE flip. This is:
+- Extremely rare (HTTP responses arrive atomically, and we retry 3x)
+- Self-healing (operator can type `resume` to un-pause the bot)
+- Not worth adding a secondary signal for now (Whapi has no custom
+  metadata field that survives the echo; zero-width Unicode in message
+  body risks being stripped by WhatsApp)
+
+Accepted as known risk. If it becomes a real problem in production,
+revisit with a zero-width marker or a timing heuristic as a fallback.
+
+**Date:** Phase 5 (April 2026)

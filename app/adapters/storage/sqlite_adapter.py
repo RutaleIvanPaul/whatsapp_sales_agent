@@ -47,6 +47,18 @@ class SqliteStorageAdapter(StorageAdapter):
         )
         self._conn.commit()
 
+    def get_by_stage(self, operator_id: str, stage: str) -> list[Session]:
+        rows = self._conn.execute(
+            "SELECT data FROM sessions WHERE operator_id=?",
+            (operator_id,),
+        ).fetchall()
+        results = []
+        for row in rows:
+            session = _deserialise_session(json.loads(row[0]))
+            if session.stage.value == stage:
+                results.append(session)
+        return results
+
 
 def _serialise_session(s: Session) -> dict:
     d = {}

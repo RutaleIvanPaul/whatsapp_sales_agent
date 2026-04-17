@@ -9,6 +9,7 @@ from app.models.operator import Operator
 from app.utils.crypto import decrypt
 from app.utils.log import log
 from app.utils.phone import hash_for_log, to_whapi
+from app.utils.sent_tracker import sent_tracker
 
 WHAPI_BASE = "https://gate.whapi.cloud"
 RETRY_BACKOFF_S = [1, 2]  # Attempt 1 immediate, 2 after 1s, 3 after 2s
@@ -70,6 +71,17 @@ class WhapiMessagingAdapter(MessagingAdapter):
                 try:
                     resp = await client.post(url, json=json)
                     if resp.status_code < 400:
+                        # Capture the message ID so we can distinguish
+                        # bot-sent echoes from operator typing in receiver.
+                        try:
+                            resp_data = resp.json()
+                            # Whapi response: {"sent": true, "message": {"id": "..."}}
+                            msg_obj = resp_data.get("message") or {}
+                            sent_id = msg_obj.get("id", "")
+                            if sent_id:
+                                sent_tracker.register(sent_id)
+                        except Exception:
+                            pass  # See TECH DEBT in sent_tracker.py
                         log(
                             "message_sent",
                             operator_id=operator.operator_id,

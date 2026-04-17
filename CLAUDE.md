@@ -21,8 +21,8 @@ Read only the section you need. Never load the entire file at once.
 
 ## Current phase
 
-PHASE 4 — Conversation Engine
-Read .claude/prompts/phase4.md before doing anything else.
+PHASE 5 — Handoff and Owner Control
+Read .claude/prompts/phase5.md before doing anything else.
 Update this line when advancing phases.
 
 ---

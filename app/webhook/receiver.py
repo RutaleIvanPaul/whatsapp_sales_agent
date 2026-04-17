@@ -9,6 +9,7 @@ from app.models.operator import OperatorStatus
 from app.utils.crypto import decrypt
 from app.utils.log import log
 from app.utils.phone import from_whapi, hash_for_log
+from app.utils.sent_tracker import sent_tracker
 from app.webhook import owner_action_handler, session_disconnect_handler
 
 router = APIRouter()
@@ -111,8 +112,19 @@ async def receive(request: Request) -> Response:
         for msg in payload.get("messages", []):
             msg_id = msg.get("id", "")
 
+
             if msg.get("from_me"):
-                asyncio.create_task(owner_action_handler.handle(payload, operator))
+                # Check if this is a bot-sent echo (our own outbound message
+                # echoing back from Whapi) or a genuine operator action.
+                if sent_tracker.is_bot_sent(msg_id):
+                    continue  # Bot echo — ignore silently
+                # Genuine operator action — passive interruption or from
+                # operator's phone. Route to owner_action_handler.
+                asyncio.create_task(
+                    owner_action_handler.handle(
+                        payload, operator, state.storage_adapter, state.messaging_adapter
+                    )
+                )
                 continue
 
             chat_id = msg.get("chat_id", "")
@@ -143,6 +155,17 @@ async def receive(request: Request) -> Response:
                     reason="invalid_phone",
                     message_id=msg_id,
                     operator_id=operator.operator_id,
+                )
+                continue
+
+            # Control thread: operator's personal phone sending TO the
+            # shop number. Must be checked BEFORE contacts filter —
+            # the operator's phone may be in the saved contacts list.
+            if sender_phone == operator.owner_personal_phone:
+                asyncio.create_task(
+                    owner_action_handler.handle(
+                        payload, operator, state.storage_adapter, state.messaging_adapter
+                    )
                 )
                 continue
 

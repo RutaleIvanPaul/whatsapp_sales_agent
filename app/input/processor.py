@@ -61,7 +61,7 @@ async def _dispatch(
             if URL_HINT_RE.search(body):
                 # Text with embedded URL — route through link handler
                 return await link_handler.extract(msg, inventory)
-            return text_handler.clean(body)
+            return text_handler.clean(msg)
         if msg_type == "image":
             return await image_handler.describe(msg, vision)
         if msg_type == "voice":

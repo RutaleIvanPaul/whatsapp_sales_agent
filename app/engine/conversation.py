@@ -5,6 +5,7 @@ from datetime import datetime
 
 from app.adapters.inventory.base import InventoryAdapter
 from app.adapters.llm.base import LLMAdapter, LLMResponse, LLMTimeoutError, ToolResult
+from app.adapters.messaging.base import MessagingAdapter
 from app.adapters.storage.base import StorageAdapter
 from app.engine import system_prompt as system_prompt_mod
 from app.engine import tools as tools_mod
@@ -28,6 +29,7 @@ async def run(
     unified_text: str,
     llm: LLMAdapter,
     inventory: InventoryAdapter,
+    messaging: MessagingAdapter,
     storage: StorageAdapter,
     max_history_turns: int,
     session_expiry_days: int,
@@ -127,7 +129,7 @@ async def run(
             try:
                 result_str = await _dispatch_tool(
                     tc, session, operator, inventory, unified_text,
-                    products_shown_this_turn,
+                    products_shown_this_turn, messaging, storage,
                 )
             except Exception as e:
                 log(
@@ -184,6 +186,8 @@ async def _dispatch_tool(
     inventory: InventoryAdapter,
     unified_text: str,
     products_shown_this_turn: list[Product],
+    messaging: MessagingAdapter,
+    storage: StorageAdapter,
 ) -> str:
     name = tc["name"]
     args = tc.get("input") or {}
@@ -203,7 +207,8 @@ async def _dispatch_tool(
 
     if name == "trigger_handoff":
         return await tools_mod.handle_trigger_handoff(
-            args.get("summary", ""), session, operator, unified_text
+            args.get("summary", ""), session, operator, messaging,
+            storage, inventory, unified_text
         )
 
     return f"Unknown tool: {name}"
