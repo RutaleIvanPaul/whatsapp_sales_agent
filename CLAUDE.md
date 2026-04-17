@@ -213,6 +213,7 @@ class StorageAdapter(ABC):
     def get(self, operator_id: str, phone: str) -> Session | None
     def set(self, operator_id: str, phone: str, session: Session) -> None
     def delete(self, operator_id: str, phone: str) -> None
+    def get_by_stage(self, operator_id: str, stage: str) -> list[Session]
 
 class OperatorAdapter(ABC):
     def get_by_channel_id(self, channel_id: str) -> Operator | None

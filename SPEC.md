@@ -189,8 +189,16 @@ INCOMING WEBHOOK PAYLOAD:
 
   image.link is stable — Whapi hosts it because auto_download is enabled.
   No need to download immediately. URL does not expire.
-  from_me: true means the operator sent from their phone.
+  from_me: true means ANY message sent from the linked WhatsApp number,
+  including bot-sent messages echoing back from the API. The receiver
+  filters bot echoes via sent_tracker (see DECISIONS.md #6). Only
+  genuine operator typing reaches owner_action_handler.
   chat_id ending @g.us is a group message — always discard.
+
+  Quoted messages (reply-to): Whapi includes the quoted message in
+  msg.context.quoted_content. For text replies: .body field. For
+  image/media replies: .caption field. The input processor prepends
+  this as [replying to: "..."] so the LLM knows what "this" refers to.
 
 SENDING MESSAGES:
   Text:
@@ -787,11 +795,11 @@ OWNER COMMANDS (in owner_action_handler.py):
   Comparison: strip, lowercase. Phone argument normalised to E.164.
 
   "resume" or "resume {phone}":
-    Find HANDED_OFF session for this operator:
+    Find paused session (HANDED_OFF or OWNER_ACTIVE) for this operator:
       If {phone} provided: find session for that customer.
-      If not: if exactly one HANDED_OFF session exists, use it; else reply
-        "Please specify: resume {phone}. Active handoffs: {list}".
-    If no HANDED_OFF session: reply "No active handoff."
+      If not: if exactly one paused session exists, use it; else reply
+        with disambiguation list.
+    If no paused session: reply "No active handoff."
     Set session.stage = CONSIDERING.
     Persist session.
     Bot sends the customer: "I'm still here if you'd like to continue

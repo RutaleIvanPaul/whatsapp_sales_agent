@@ -202,3 +202,37 @@ Accepted as known risk. If it becomes a real problem in production,
 revisit with a zero-width marker or a timing heuristic as a fallback.
 
 **Date:** Phase 5 (April 2026)
+
+---
+
+## 7. Quoted message extraction for reply-to context
+
+**Decision:** When a customer replies to a specific message (long-press
++ Reply in WhatsApp), `input/text.py` extracts the quoted content from
+`msg.context.quoted_content` and prepends it as
+`[replying to: "..."] customer's text`. This gives the LLM context for
+what "this", "that one", or "I want it" refers to.
+
+**Whapi payload structure:** `msg.context.quoted_content.body` for text
+replies, `msg.context.quoted_content.caption` for image/media replies.
+This was discovered by inspecting the raw webhook payload during Phase 5
+testing — the Whapi documentation doesn't clearly document this field.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 8. Resume/handled commands find both HANDED_OFF and OWNER_ACTIVE sessions
+
+**Decision:** The `resume` and `handled` owner commands search for
+sessions in BOTH `Stage.HANDED_OFF` and `Stage.OWNER_ACTIVE` when
+looking for the target session to act on.
+
+**Why:** When the operator manually types in a customer thread (passive
+interruption), the session stage becomes `OWNER_ACTIVE`. If the operator
+then sends `resume` in the control thread, the command needs to find
+that session. Originally it only searched for `HANDED_OFF`, which meant
+there was no way to resume after a manual interruption — the operator
+got "No active handoff."
+
+**Date:** Phase 5 (April 2026)
