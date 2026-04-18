@@ -111,7 +111,7 @@ thread is for ALERTS and CONTROL COMMANDS only.
   When session.stage == HANDED_OFF and customer sends a new message:
     Check session.last_holding_sent.
     If None or (now() - last_holding_sent) > 3600 seconds (1 hour):
-      Send: "The team has been notified and will be with you shortly!"
+      Send: "Still here! Just sorting a few things out for you."
       Set session.last_holding_sent = now().
       Persist session.
     Else: do nothing.

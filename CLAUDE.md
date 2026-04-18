@@ -9,9 +9,9 @@ and personal conversations unchanged.
 
 Customers message the operator's number. The bot handles enquiries, finds
 matching products from a Google Sheet, and alerts the operator when a customer
-is ready to buy. When the operator takes over, they type in a control thread
-and Salelular forwards their reply to the customer from the shop number.
-The customer always sees one number, one continuous conversation — whether
+is ready to buy. The operator then opens the customer's chat in the shop's
+WhatsApp and types directly. The bot detects this and steps aside. The
+customer always sees one number, one continuous conversation — whether
 the bot or the operator is replying.
 
 Full technical reference: SPEC.md

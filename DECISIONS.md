@@ -198,8 +198,20 @@ OWNER_ACTIVE flip. This is:
   metadata field that survives the echo; zero-width Unicode in message
   body risks being stripped by WhatsApp)
 
-Accepted as known risk. If it becomes a real problem in production,
-revisit with a zero-width marker or a timing heuristic as a fallback.
+Accepted as known risk.
+
+**Production fix options (in order of robustness):**
+1. Whapi webhook delivery confirmation — if Whapi offers a way to mark
+   outbound-API messages distinctly in the webhook payload (e.g. a
+   `source: "api"` field), filter on that instead of tracking IDs. The
+   raw payload already shows `"source": "api"` — but this field was
+   discovered late and needs validation that it's consistently present.
+2. Zero-width Unicode marker — embed a zero-width space (U+200B) at
+   the end of every bot-sent message body. If the echo arrives with
+   the marker, it's a bot echo. Risk: WhatsApp may strip it.
+3. Timing heuristic — if a from_me:true message arrives within 3
+   seconds of a message_sent log for the same chat_id, treat as echo.
+   Fragile under load.
 
 **Date:** Phase 5 (April 2026)
 
@@ -236,3 +248,102 @@ there was no way to resume after a manual interruption — the operator
 got "No active handoff."
 
 **Date:** Phase 5 (April 2026)
+
+---
+
+## 9. Single image URL per product (MVP simplification)
+
+**Decision:** Each Product has a single `image_url` field. Multi-image
+support is deferred.
+
+**Why:** Google Sheets as inventory source makes multi-image storage
+awkward. MVP catalogue sizes (15-200 products) do not require vector
+search to return good results.
+
+**Future path:** `product_images` table with CLIP embeddings when moving
+to Supabase. Documented in SPEC.md S25 and S26.
+
+**Date:** Phase 2 (April 2026)
+
+---
+
+## 10. RapidFuzz fuzzy search over vector search (MVP)
+
+**Decision:** Text-based fuzzy search using RapidFuzz with bigram
+decomposition, rather than vector embedding similarity search.
+
+**Why:** Adequate for text-based queries on small catalogues. No
+infrastructure dependency. Bigram enhancement handles verbose vision
+descriptions adequately. Threshold 70 preserves precision.
+
+**Future path:** Replace search() internals in cache.py with pgvector
+cosine similarity. The search() interface is unchanged — the swap is
+invisible to business logic.
+
+**Date:** Phase 2 (April 2026)
+
+---
+
+## 11. Voice notes return placeholder (MVP)
+
+**Decision:** `voice.py` returns a fixed placeholder rather than
+transcribing audio.
+
+**Why:** Whisper integration adds infrastructure complexity and cost that
+is not justified before real operator usage data exists. The placeholder
+degrades gracefully — the LLM asks the customer to type.
+
+**Future path:** TranscriptionAdapter ABC defined in SPEC.md S7.
+Implement whisper.py when operators report voice note usage is
+significant.
+
+**Date:** Phase 4 (April 2026)
+
+---
+
+## 12. Social media export over scraping
+
+**Decision:** Build inventory from operators' own Instagram/TikTok data
+exports rather than scraping their profiles.
+
+**Why:** Instagram and TikTok scraping violates their ToS and is
+technically unreliable (auth walls, rate limits, layout changes).
+Platform data exports are legitimate, stable, and give the same result.
+
+**Trade-off:** Semi-automated — operator does one export step — rather
+than fully automated. This is acceptable because inventory building is
+a one-time setup task, not a daily operation.
+
+**Date:** Post-MVP design (April 2026)
+
+---
+
+## 13. Manual Whapi channel creation for MVP onboarding
+
+**Decision:** Channels are created manually in the Whapi dashboard for
+MVP. Programmatic creation via Whapi Partner API is documented but not
+implemented.
+
+**Why:** Programmatic channel creation requires Whapi partner plan. MVP
+operator count does not justify the cost.
+
+**Future path:** `--auto-channel` flag in `onboard_operator.py` when
+Whapi partner plan is activated. Documented in SPEC.md S23.
+
+**Date:** Phase 3 (April 2026)
+
+---
+
+## 14. Phase 7 human feel evaluation as mandatory gate
+
+**Decision:** A dedicated Phase 7 consisting entirely of human evaluation
+is required before MVP sign-off. No code deliverables.
+
+**Why:** Technical correctness is necessary but not sufficient. The
+product's core promise is that customers cannot tell they are talking to
+a bot. This requires deliberate human evaluation, not automated testing.
+10 conversation types, 10 evaluation criteria, and an independent
+reviewer test (give the log to someone who didn't know — they should not
+notice).
+
+**Date:** Post-MVP design (April 2026)

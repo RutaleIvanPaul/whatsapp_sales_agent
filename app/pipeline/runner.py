@@ -100,8 +100,8 @@ async def run(
                 session.stage = Stage.CONSIDERING
                 session.last_active = datetime.utcnow()
                 storage.set(operator.operator_id, sender_phone, session)
-                # Prepend "still here" — fall through to conversation engine
-                unified = "I'm still here if you'd like to keep browsing! " + unified
+                # Prepend warm continuation — fall through to conversation engine
+                unified = "Hey, good to hear from you again! " + unified
                 log("handoff_reverted_24h", phone_hash=phone_hash,
                     operator_id=operator.operator_id)
             else:
@@ -114,7 +114,7 @@ async def run(
                 if should_send:
                     await messaging.send_text(
                         sender_phone,
-                        "The team has been notified and will be with you shortly!",
+                        "Still here! Just sorting a few things out for you.",
                         operator,
                     )
                     session.last_holding_sent = now

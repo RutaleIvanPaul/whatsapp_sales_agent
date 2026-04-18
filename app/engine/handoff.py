@@ -9,7 +9,6 @@ from app.adapters.storage.base import StorageAdapter
 from app.models.operator import Operator
 from app.models.session import Session, Stage
 from app.utils.log import log
-from app.utils.phone import to_whapi
 
 
 async def trigger(
@@ -23,11 +22,24 @@ async def trigger(
 ) -> str:
     """Full handoff: flip session, persist, alert operator with wa.me link."""
 
-    # 1. Update session state
+    # 1. Check for concurrent handoffs (log warning, do not block)
+    existing_handoffs = storage.get_by_stage(
+        operator.operator_id, Stage.HANDED_OFF.value
+    )
+    if existing_handoffs:
+        log(
+            "concurrent_handoff",
+            operator_id=operator.operator_id,
+            existing_count=len(existing_handoffs),
+            existing_phones=[s.phone for s in existing_handoffs],
+            new_phone=session.phone,
+        )
+
+    # 2. Update session state
     session.stage = Stage.HANDED_OFF
     session.handed_off_at = datetime.utcnow()
 
-    # 2. Persist immediately
+    # 3. Persist immediately
     storage.set(operator.operator_id, session.phone, session)
 
     # 3. Look up last shown product
@@ -39,28 +51,27 @@ async def trigger(
         if product:
             last_product_line = f"{product.name} — {product.price}"
 
-    # 4. Build wa.me link
-    customer_digits = to_whapi(session.phone)
-    wa_link = f"https://wa.me/{customer_digits}"
-
-    # 5. Build alert per S14 template + OPERATOR ALERT CONTENT RULES
+    # 4. Build alert per S14 template + OPERATOR ALERT CONTENT RULES
     customer_name = session.name or "Unknown"
     intent = session.intent or "not specified"
     snippet = (triggering_message or "")[:120]
 
     alert = (
-        f"🛎 Customer ready to close:\n"
-        f"   Name: {customer_name}\n"
-        f"   Looking for: {intent}\n"
-        f"   Last shown: {last_product_line}\n"
-        f'   What they said: "{snippet}"\n'
+        f"New sale opportunity:\n"
         f"\n"
-        f"To reply: open your shop's WhatsApp and find this "
-        f"customer's chat ({customer_name}, {session.phone}).\n"
+        f"Customer: {customer_name}\n"
+        f"Looking for: {intent}\n"
+        f"Last product shown: {last_product_line}\n"
+        f'They said: "{snippet}"\n'
         f"\n"
-        f"When done, reply HERE:\n"
-        f"  resume {session.phone} — hand back to bot\n"
-        f"  handled {session.phone} — you are dealing with it"
+        f"To respond, open your shop's WhatsApp and find "
+        f"{customer_name}'s chat.\n"
+        f"\n"
+        f"When you're done, come back here and type:\n"
+        f"  resume {session.phone}\n"
+        f"    (to let the assistant continue helping them)\n"
+        f"  handled {session.phone}\n"
+        f"    (if you've taken care of it yourself)"
     )
 
     # 6. Send alert to operator

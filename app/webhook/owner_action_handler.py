@@ -115,8 +115,8 @@ async def _handle_control_command(
         await messaging.send_text(
             operator.owner_personal_phone,
             "Unrecognised command. Available:\n"
-            "  resume {phone} — hand back to bot\n"
-            "  handled {phone} — you are dealing with it",
+            "  resume {phone} — let the assistant continue\n"
+            "  handled {phone} — you've taken care of it",
             operator,
         )
         log(
