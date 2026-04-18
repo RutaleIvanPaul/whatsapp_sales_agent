@@ -8,6 +8,7 @@ from app.adapters.messaging.base import MessagingAdapter
 from app.adapters.storage.base import StorageAdapter
 from app.adapters.vision.base import VisionAdapter
 from app.engine import conversation
+from app.input import intent as intent_mod
 from app.input import language as language_mod
 from app.input import processor
 from app.models.operator import Operator
@@ -59,40 +60,16 @@ async def run(
         log("pipeline_skipped", reason="empty_unified_text", phone_hash=phone_hash)
         return
 
-    # 2. Language gate (provider-agnostic — uses classifier_llm)
-    lang = await language_mod.classify(unified, classifier_llm)
-    if lang in ("LUGANDA", "UNKNOWN"):
-        await _send_canned_and_alert(
-            sender_phone, unified, lang, operator, messaging, phone_hash
-        )
-        return
-
-    # 3. Load or create session
+    # 2. Load existing session (needed for stage checks + intent gate)
     session = storage.get(operator.operator_id, sender_phone)
-    if session is None:
-        now = datetime.utcnow()
-        session = Session(
-            operator_id=operator.operator_id,
-            phone=sender_phone,
-            name=None,
-            language=lang.lower() if lang in ("ENGLISH", "MIXED") else None,
-            history=[],
-            intent=None,
-            constraints={},
-            shown_product_ids=[],
-            stage=Stage.EXPLORING,
-            handed_off_at=None,
-            last_holding_sent=None,
-            last_active=now,
-            created_at=now,
-        )
 
-    # 4. Check handoff / owner-active stages before running engine
-    if session.stage == Stage.OWNER_ACTIVE:
+    # 3. OWNER_ACTIVE — skip pipeline entirely
+    if session and session.stage == Stage.OWNER_ACTIVE:
         log("pipeline_skipped", reason="owner_active", phone_hash=phone_hash)
         return
 
-    if session.stage == Stage.HANDED_OFF:
+    # 4. HANDED_OFF — holding message or 24h revert
+    if session and session.stage == Stage.HANDED_OFF:
         if session.handed_off_at:
             handed_off_s = (datetime.utcnow() - session.handed_off_at).total_seconds()
             if handed_off_s > 86400:
@@ -121,7 +98,49 @@ async def run(
                     storage.set(operator.operator_id, sender_phone, session)
                 return  # Do NOT run conversation engine
 
-    # 5. Run the conversation engine
+    # 5. Language gate
+    lang = await language_mod.classify(unified, classifier_llm)
+    if lang in ("LUGANDA", "UNKNOWN"):
+        await _send_canned_and_alert(
+            sender_phone, unified, lang, operator, messaging, phone_hash
+        )
+        return
+
+    # 6. Intent gate — only for new/unknown contacts (no session or empty history)
+    should_classify_intent = (session is None or not session.history)
+    if should_classify_intent:
+        intent = await intent_mod.classify_intent(unified, classifier_llm)
+        if intent == "NOT_SALES":
+            log(
+                "intent_gate_silent",
+                phone_hash=phone_hash,
+                operator_id=operator.operator_id,
+                chars=len(unified),
+            )
+            # TODO: operator alert for high-signal non-sales messages
+            # Deferred — needs real usage data to define "important"
+            return  # Silent. No reply. No session update.
+
+    # 7. Create session if new
+    if session is None:
+        now = datetime.utcnow()
+        session = Session(
+            operator_id=operator.operator_id,
+            phone=sender_phone,
+            name=None,
+            language=lang.lower() if lang in ("ENGLISH", "MIXED") else None,
+            history=[],
+            intent=None,
+            constraints={},
+            shown_product_ids=[],
+            stage=Stage.EXPLORING,
+            handed_off_at=None,
+            last_holding_sent=None,
+            last_active=now,
+            created_at=now,
+        )
+
+    # 8. Run the conversation engine
     reply_text, products = await conversation.run(
         operator=operator,
         session=session,

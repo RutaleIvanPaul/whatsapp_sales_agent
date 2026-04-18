@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -26,3 +26,5 @@ class Operator:
     llm_model: str
     status: OperatorStatus
     created_at: datetime
+    excluded_phones: list[str] = field(default_factory=list)
+    included_phones: list[str] = field(default_factory=list)

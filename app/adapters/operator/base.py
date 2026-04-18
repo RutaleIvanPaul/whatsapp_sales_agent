@@ -14,3 +14,6 @@ class OperatorAdapter(ABC):
 
     @abstractmethod
     def update_status(self, operator_id: str, status: OperatorStatus) -> None: ...
+
+    @abstractmethod
+    def save(self, operator: Operator) -> None: ...

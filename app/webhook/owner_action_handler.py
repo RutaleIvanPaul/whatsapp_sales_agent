@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from app.adapters.messaging.base import MessagingAdapter
+from app.adapters.operator.base import OperatorAdapter
 from app.adapters.storage.base import StorageAdapter
 from app.models.operator import Operator
 from app.models.session import Session, Stage
@@ -24,6 +25,7 @@ async def handle(
     operator: Operator,
     storage: StorageAdapter,
     messaging: MessagingAdapter,
+    operator_adapter: OperatorAdapter | None = None,
 ) -> None:
     """Route owner actions: control-thread commands OR passive interruption."""
 
@@ -36,7 +38,7 @@ async def handle(
     if is_from_me:
         await _handle_passive_interruption(msg, operator, storage)
     else:
-        await _handle_control_command(msg, operator, storage, messaging)
+        await _handle_control_command(msg, operator, storage, messaging, operator_adapter)
 
 
 # ── CASE A: control thread ───────────────────────────────────────────────────
@@ -46,6 +48,7 @@ async def _handle_control_command(
     operator: Operator,
     storage: StorageAdapter,
     messaging: MessagingAdapter,
+    operator_adapter: OperatorAdapter | None = None,
 ) -> None:
     raw_from = msg.get("from", "")
     try:
@@ -111,12 +114,35 @@ async def _handle_control_command(
             phone_hash=hash_for_log(session.phone),
         )
 
+    elif text.startswith("exclude"):
+        await _cmd_exclude(text, operator, messaging, operator_adapter)
+
+    elif text.startswith("include"):
+        await _cmd_include(text, operator, messaging, operator_adapter)
+
+    elif text.startswith("remove"):
+        await _cmd_remove(text, operator, messaging, operator_adapter)
+
+    elif text == "list excluded":
+        phones = operator.excluded_phones or []
+        msg_text = "Excluded numbers:\n" + "\n".join(f"  {p}" for p in phones) if phones else "No excluded numbers."
+        await messaging.send_text(operator.owner_personal_phone, msg_text, operator)
+
+    elif text == "list included":
+        phones = operator.included_phones or []
+        msg_text = "Included numbers (whitelisted contacts):\n" + "\n".join(f"  {p}" for p in phones) if phones else "No included numbers."
+        await messaging.send_text(operator.owner_personal_phone, msg_text, operator)
+
     else:
         await messaging.send_text(
             operator.owner_personal_phone,
             "Unrecognised command. Available:\n"
             "  resume {phone} — let the assistant continue\n"
-            "  handled {phone} — you've taken care of it",
+            "  handled {phone} — you've taken care of it\n"
+            "  exclude {phone} — block a number\n"
+            "  include {phone} — allow a saved contact through\n"
+            "  remove {phone} — undo exclude or include\n"
+            "  list excluded / list included",
             operator,
         )
         log(
@@ -124,6 +150,80 @@ async def _handle_control_command(
             operator_id=operator.operator_id,
             command_type="unrecognised",
         )
+
+
+# ── Exclusion / inclusion commands ────────────────────────────────────────────
+
+async def _cmd_exclude(
+    text: str, operator: Operator, messaging: MessagingAdapter,
+    operator_adapter: OperatorAdapter | None,
+) -> None:
+    phone = _parse_phone_arg(text, "exclude")
+    if not phone:
+        await messaging.send_text(operator.owner_personal_phone, "Usage: exclude {phone}", operator)
+        return
+    if phone not in operator.excluded_phones:
+        operator.excluded_phones.append(phone)
+        if operator_adapter:
+            operator_adapter.save(operator)
+    await messaging.send_text(
+        operator.owner_personal_phone,
+        f"Excluded {phone}. They will no longer receive replies.",
+        operator,
+    )
+    log("exclusion_added", operator_id=operator.operator_id, phone_hash=hash_for_log(phone))
+
+
+async def _cmd_include(
+    text: str, operator: Operator, messaging: MessagingAdapter,
+    operator_adapter: OperatorAdapter | None,
+) -> None:
+    phone = _parse_phone_arg(text, "include")
+    if not phone:
+        await messaging.send_text(operator.owner_personal_phone, "Usage: include {phone}", operator)
+        return
+    if phone not in operator.included_phones:
+        operator.included_phones.append(phone)
+        if operator_adapter:
+            operator_adapter.save(operator)
+    await messaging.send_text(
+        operator.owner_personal_phone,
+        f"Included {phone}. They can now reach the assistant even if they are a saved contact.",
+        operator,
+    )
+    log("inclusion_added", operator_id=operator.operator_id, phone_hash=hash_for_log(phone))
+
+
+async def _cmd_remove(
+    text: str, operator: Operator, messaging: MessagingAdapter,
+    operator_adapter: OperatorAdapter | None,
+) -> None:
+    phone = _parse_phone_arg(text, "remove")
+    if not phone:
+        await messaging.send_text(operator.owner_personal_phone, "Usage: remove {phone}", operator)
+        return
+    removed_from = []
+    if phone in operator.excluded_phones:
+        operator.excluded_phones.remove(phone)
+        removed_from.append("excluded")
+    if phone in operator.included_phones:
+        operator.included_phones.remove(phone)
+        removed_from.append("included")
+    if removed_from and operator_adapter:
+        operator_adapter.save(operator)
+    if removed_from:
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"Removed {phone} from {' and '.join(removed_from)} list.",
+            operator,
+        )
+    else:
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"{phone} was not on any list.",
+            operator,
+        )
+    log("exclusion_removed", operator_id=operator.operator_id, phone_hash=hash_for_log(phone))
 
 
 # ── CASE B: passive interruption ─────────────────────────────────────────────

@@ -219,6 +219,7 @@ class OperatorAdapter(ABC):
     def get_by_channel_id(self, channel_id: str) -> Operator | None
     def get_all_active(self) -> list[Operator]
     def update_status(self, operator_id: str, status: OperatorStatus) -> None
+    def save(self, operator: Operator) -> None
 
 ---
 

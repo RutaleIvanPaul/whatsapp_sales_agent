@@ -347,3 +347,64 @@ reviewer test (give the log to someone who didn't know — they should not
 notice).
 
 **Date:** Post-MVP design (April 2026)
+
+---
+
+## 15. Two-list exclusion/inclusion system
+
+**Decision:** Operator manages two lists on their Operator record:
+`excluded_phones` (manually blocked) and `included_phones` (whitelisted
+saved contacts). The receiver checks included → contacts cache → excluded
+in that order.
+
+**Why not simpler (exclude-only):** The contacts cache already blocks all
+saved contacts. But some saved contacts ARE customers (e.g., repeat buyer
+the operator added). The `include` list overrides the contacts cache for
+specific numbers. Without it, there's no way to let a saved contact
+through.
+
+**Why not smarter (auto-detect):** Auto-detecting "who should be excluded"
+requires ML intent classification, which is a separate feature (intent
+gate). The exclusion list handles the explicit case where the operator
+knows a specific person should not receive bot responses.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 16. Two-stage intent gate (keyword first, LLM fallback)
+
+**Decision:** New contacts are classified as SALES or NOT_SALES before
+entering the conversation engine. Stage 1 is a fast keyword check (no
+API). Stage 2 is an LLM call (cheap model) only for ambiguous messages.
+
+**Why session-state-aware:** The intent gate only fires when there is no
+session or the session history is empty. Existing customers (history has
+turns) skip it entirely. This means <10% of messages ever reach the
+classifier.
+
+**Why keyword first:** Most first messages contain obvious signals. "do
+you have Nike shoes?" contains "do you have" and "shoes". "wrong number"
+contains "wrong number". These can be caught in microseconds without an
+API call. The LLM is only needed for genuinely ambiguous messages like
+"hello" (which could be either a customer greeting or a friend saying
+hi).
+
+**Why fail open:** On any error or ambiguity, the gate returns SALES.
+Silencing a real customer is worse than engaging with a non-customer.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 17. Customer text delimiters in all classifiers
+
+**Decision:** Both the language classifier (`language.py`) and intent
+classifier (`intent.py`) wrap customer text in `=== CUSTOMER MESSAGE ===`
+delimiters per CLAUDE.md rule 10.
+
+**Why:** Rule 10 is non-negotiable: "Customer input always wrapped in
+delimiters." The language classifier was missing them (pre-existing tech
+debt from Phase 4). Fixed alongside the intent gate implementation.
+
+**Date:** Phase 5 (April 2026)

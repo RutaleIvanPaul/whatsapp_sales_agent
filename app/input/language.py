@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 
 from app.adapters.llm.base import LLMAdapter, LLMTimeoutError
+from app.engine.system_prompt import CUSTOMER_BLOCK_CLOSE, CUSTOMER_BLOCK_OPEN
 from app.utils.log import log
 
 CLASSIFIER_MAX_TOKENS = 10
@@ -28,7 +29,7 @@ async def classify(text: str, llm: LLMAdapter) -> str:
     user_prompt = (
         "Classify the language of this message. "
         "Reply with exactly one of: ENGLISH, LUGANDA, MIXED, UNKNOWN.\n"
-        f"Message: {text}"
+        f"{CUSTOMER_BLOCK_OPEN}\n{text}\n{CUSTOMER_BLOCK_CLOSE}"
     )
 
     start = time.monotonic()

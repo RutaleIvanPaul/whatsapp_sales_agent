@@ -122,7 +122,8 @@ async def receive(request: Request) -> Response:
                 # operator's phone. Route to owner_action_handler.
                 asyncio.create_task(
                     owner_action_handler.handle(
-                        payload, operator, state.storage_adapter, state.messaging_adapter
+                        payload, operator, state.storage_adapter,
+                        state.messaging_adapter, state.operator_adapter,
                     )
                 )
                 continue
@@ -164,15 +165,31 @@ async def receive(request: Request) -> Response:
             if sender_phone == operator.owner_personal_phone:
                 asyncio.create_task(
                     owner_action_handler.handle(
-                        payload, operator, state.storage_adapter, state.messaging_adapter
+                        payload, operator, state.storage_adapter,
+                        state.messaging_adapter, state.operator_adapter,
                     )
                 )
                 continue
 
-            if state.contacts_cache.is_contact(operator.operator_id, sender_phone):
+            # Step 8: Include override — whitelisted contacts bypass filter
+            included = set(operator.included_phones)
+            if sender_phone not in included:
+                # Step 9: Contacts cache — saved contacts excluded by default
+                if state.contacts_cache.is_contact(operator.operator_id, sender_phone):
+                    log(
+                        "message_discarded",
+                        reason="saved_contact",
+                        phone_hash=hash_for_log(sender_phone),
+                        message_id=msg_id,
+                        operator_id=operator.operator_id,
+                    )
+                    continue
+
+            # Step 9.5: Manual exclusion list
+            if sender_phone in set(operator.excluded_phones):
                 log(
                     "message_discarded",
-                    reason="saved_contact",
+                    reason="excluded",
                     phone_hash=hash_for_log(sender_phone),
                     message_id=msg_id,
                     operator_id=operator.operator_id,

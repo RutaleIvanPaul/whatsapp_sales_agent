@@ -76,4 +76,7 @@ class SqliteOperatorAdapter(OperatorAdapter):
         d["status"] = OperatorStatus(d["status"])
         if d.get("created_at") is not None:
             d["created_at"] = datetime.fromisoformat(d["created_at"])
+        # Backward compat: existing DB rows may not have these fields
+        d.setdefault("excluded_phones", [])
+        d.setdefault("included_phones", [])
         return Operator(**d)

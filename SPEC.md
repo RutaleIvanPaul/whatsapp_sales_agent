@@ -299,6 +299,8 @@ OPERATOR (app/models/operator.py):
       llm_model: str                    # e.g. "claude-sonnet-4-6"
       status: OperatorStatus
       created_at: datetime
+      excluded_phones: list[str]        # manually blocked numbers
+      included_phones: list[str]        # whitelisted saved contacts
 
 SESSION (app/models/session.py):
 
@@ -367,7 +369,9 @@ PROCESSING ORDER — every step must pass before the next:
        true  → call owner_action_handler(payload, operator), return 200
        false → continue
   8. Check chat_id — ends with @g.us: discard, return 200
-  9. Check sender phone against contacts cache — known contact: discard, return 200
+  9. Check sender against included_phones — if whitelisted, skip contacts filter
+  9a. Check sender phone against contacts cache — known contact: discard, return 200
+  9b. Check sender against excluded_phones — if excluded: discard, return 200
   10. Return 200 OK
   11. queue.put_nowait(payload, operator)  ← fire and forget
 
@@ -838,9 +842,22 @@ OWNER COMMANDS (in owner_action_handler.py):
     Bot suppressed for that customer (operator handles directly from
     the shop's WhatsApp).
 
+  "exclude {phone}":
+    Add phone to operator.excluded_phones. Persist. Confirm.
+    That number will be silently ignored by the receiver.
+
+  "include {phone}":
+    Add phone to operator.included_phones. Persist. Confirm.
+    That number bypasses the saved-contacts filter and can reach the bot.
+
+  "remove {phone}":
+    Remove from whichever list (excluded or included). Persist. Confirm.
+
+  "list excluded" / "list included":
+    Send the current list to the operator.
+
   Unrecognised text in the control thread:
-    Reply: "Unrecognised command. Available: resume {phone}, handled {phone}."
-    Do NOT forward anywhere.
+    Reply with available commands. Do NOT forward anywhere.
 
 HOLDING MESSAGE:
   While session.stage = HANDED_OFF and customer sends another message:
@@ -1527,3 +1544,52 @@ INTEGRATION POINT:
   The core bot reads from the operators table.
   Schema is already designed for this (operator_id, status fields exist).
   No API contract between web app and core bot needed.
+
+---
+
+## S30 — Intent Gate
+
+FILE: app/input/intent.py
+
+PURPOSE:
+  Silently drop non-sales first messages from unknown contacts.
+  Prevents the bot from engaging with wrong-number texts, personal
+  messages, or random noise. The customer receives no reply — silence
+  is the correct response, as it does not reveal monitoring.
+
+SESSION-STATE AWARENESS:
+  The intent gate does NOT fire for every message. It checks the
+  session state first:
+
+  No session or empty history → run intent classification
+  Session with history turns  → skip (already a customer)
+  HANDED_OFF or OWNER_ACTIVE  → skip (handled separately)
+
+  This means the vast majority of messages never hit the classifier.
+
+TWO-STAGE CLASSIFICATION:
+
+  Stage 1 — keyword check (sync, microseconds, no API):
+    Sales keywords: price, available, size, colour, do you have,
+      want to buy, how much, delivery, order, stock, looking for, etc.
+    Not-sales keywords: wrong number, is this, who is this, sorry wrong
+    Sales match → SALES (continue to engine)
+    Not-sales match AND no sales → NOT_SALES (silent drop)
+    Neither → Stage 2
+
+  Stage 2 — LLM classifier (cheap model, max 10 tokens):
+    Only fires for ambiguous first messages.
+    Uses === CUSTOMER MESSAGE === delimiters (CLAUDE.md rule 10).
+    Fail open: defaults to SALES on any error or unrecognised response.
+
+BEHAVIOUR ON NOT_SALES:
+  Silent. No reply. No session created. No session updated.
+  Log: intent_gate_silent with phone_hash, operator_id, chars.
+  Never log message content.
+
+  If the same person messages again with sales intent, they will be
+  re-classified (history is still empty) and pass through.
+
+LOGGING:
+  intent_classified: result, stage (keyword|llm), chars, duration_ms
+  intent_gate_silent: phone_hash, operator_id, chars
