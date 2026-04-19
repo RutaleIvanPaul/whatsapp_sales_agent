@@ -459,3 +459,26 @@ the bot. The `source: "api"` field is set by Whapi on all API-sent
 messages and is always present in the webhook payload.
 
 **Date:** Phase 5 (April 2026)
+
+---
+
+## 20. Response time optimisation before Phase 6
+
+**Decision:** Optimise response latency before Phase 6 so Phase 7 human
+feel evaluation is not blocked by perceptible delays.
+
+**Why:** 10-35 second response times during Phase 5 testing. No human
+salesperson takes 35 seconds to reply on WhatsApp. The biggest
+contributor was the handoff alert blocking the pipeline (22s).
+
+**Changes made:**
+- Handoff alert: fire-and-forget via asyncio.create_task — pipeline no
+  longer waits for the alert to send
+- Language classifier: two-stage with keyword pre-filter — obvious
+  English/Luganda caught in microseconds, LLM only for ambiguous
+- Typing time: adaptive — 1s for short messages, 2s for >200 chars
+- Pipeline timing: pipeline_timing log event with per-stage breakdown
+
+**Buffer debounce kept at 3s** — user decision.
+
+**Date:** Phase 5 (April 2026)

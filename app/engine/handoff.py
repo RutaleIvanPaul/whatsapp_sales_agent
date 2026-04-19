@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 
@@ -20,7 +21,7 @@ async def trigger(
     inventory: InventoryAdapter,
     triggering_message: str,
 ) -> str:
-    """Full handoff: flip session, persist, alert operator with wa.me link."""
+    """Full handoff: flip session, persist, fire-and-forget operator alert."""
 
     # 1. Check for concurrent handoffs (log warning, do not block)
     existing_handoffs = storage.get_by_stage(
@@ -31,7 +32,6 @@ async def trigger(
             "concurrent_handoff",
             operator_id=operator.operator_id,
             existing_count=len(existing_handoffs),
-            existing_phones=[s.phone for s in existing_handoffs],
             new_phone=session.phone,
         )
 
@@ -42,7 +42,7 @@ async def trigger(
     # 3. Persist immediately
     storage.set(operator.operator_id, session.phone, session)
 
-    # 3. Look up last shown product
+    # 4. Build alert context
     last_product_line = "none shown yet"
     if session.shown_product_ids:
         by_id = {p.id: p for p in inventory.get_all()}
@@ -51,7 +51,6 @@ async def trigger(
         if product:
             last_product_line = f"{product.name} — {product.price}"
 
-    # 4. Build alert per S14 template + OPERATOR ALERT CONTENT RULES
     customer_name = session.name or "Unknown"
     intent = session.intent or "not specified"
     snippet = (triggering_message or "")[:120]
@@ -74,7 +73,23 @@ async def trigger(
         f"    (if you've taken care of it yourself)"
     )
 
-    # 6. Send alert to operator
+    # 5. Fire-and-forget alert — do not block the pipeline
+    asyncio.create_task(_send_alert(messaging, operator, alert))
+
+    # 6. Log (returns immediately, alert sends in background)
+    log(
+        "handoff_triggered",
+        operator_id=operator.operator_id,
+        summary=(summary or "")[:200],
+    )
+
+    return json.dumps({"status": "handoff_triggered"})
+
+
+async def _send_alert(
+    messaging: MessagingAdapter, operator: Operator, alert: str
+) -> None:
+    """Background task — sends operator alert, handles own exceptions."""
     try:
         await messaging.send_text(
             operator.owner_personal_phone, alert, operator
@@ -87,12 +102,3 @@ async def trigger(
             message=type(e).__name__,
             operator_id=operator.operator_id,
         )
-
-    # 7. Log
-    log(
-        "handoff_triggered",
-        operator_id=operator.operator_id,
-        summary=(summary or "")[:200],
-    )
-
-    return json.dumps({"status": "handoff_triggered"})

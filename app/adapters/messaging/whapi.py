@@ -23,10 +23,11 @@ class WhapiMessagingAdapter(MessagingAdapter):
     async def send_text(self, phone: str, text: str, operator: Operator) -> None:
         token = decrypt(operator.whapi_channel_token, self._key)
         url = f"{WHAPI_BASE}/messages/text?token={token}"
+        typing_time = 2 if len(text) > 200 else 1
         body = {
             "to": f"{to_whapi(phone)}@s.whatsapp.net",
             "body": text,
-            "typing_time": 2,
+            "typing_time": typing_time,
         }
         await self._send_with_retry(
             url=url, json=body, operator=operator, phone=phone, kind="text"
@@ -92,11 +93,14 @@ class WhapiMessagingAdapter(MessagingAdapter):
                         return
                     last_status = resp.status_code
                     last_error = f"http_{resp.status_code}"
-                    # Capture body for debugging non-200 responses
                     try:
                         last_error = f"http_{resp.status_code}:{resp.text[:200]}"
                     except Exception:
                         pass
+                    # Don't retry 400 errors — the request is malformed
+                    # (e.g. broken image URL). Retrying won't help.
+                    if resp.status_code == 400:
+                        break
                 except (httpx.RequestError, httpx.TimeoutException) as e:
                     last_error = type(e).__name__
 
