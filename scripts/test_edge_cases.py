@@ -255,9 +255,12 @@ def test_7_rate_limit():
 # ── HANDOFF & SESSION STAGES (T8-T13) ───────────────────────────────────────
 
 
-def test_8_holding_message():
-    """Customer messages while HANDED_OFF → holding message once per hour."""
-    # Use a unique phone to avoid cross-test contamination
+def test_8_bot_active_during_handoff():
+    """Customer messages while HANDED_OFF → bot continues responding normally.
+
+    Design change: HANDED_OFF no longer suppresses the bot. The bot only
+    stops when the operator types in the customer thread (OWNER_ACTIVE).
+    """
     t8_phone = "+256700800800"
     t8_from = "256700800800"
     _get_storage().delete(OPERATOR_ID, t8_phone)
@@ -267,61 +270,60 @@ def test_8_holding_message():
         phone=t8_phone,
         stage=Stage.HANDED_OFF,
         handed_off_at=datetime.utcnow(),
-        last_holding_sent=None,
     )
     _set_session(session)
-    time.sleep(1)  # ensure DB write settles before webhook hits pipeline
+    time.sleep(1)
 
-    msg_id = f"t8-holding-{int(time.time())}"
+    msg_id = f"t8-active-{int(time.time())}"
     payload = _make_payload(
-        msg_id=msg_id, text="are you there?",
+        msg_id=msg_id, text="do you have any shoes?",
         from_phone=t8_from, chat_id=f"{t8_from}@s.whatsapp.net",
     )
     resp = _post_webhook(payload)
-    time.sleep(15)  # wait for buffer debounce + pipeline
+    time.sleep(15)
 
     updated = _get_storage().get(OPERATOR_ID, t8_phone)
-    holding_sent = updated is not None and updated.last_holding_sent is not None
-    record(8, "Holding message sent (last_holding_sent set)", holding_sent,
-           f"stage={updated.stage.value if updated else '?'}, "
-           f"last_holding_sent={'set' if holding_sent else 'None'}")
-
-    # Second message within the hour — should NOT update last_holding_sent
-    if holding_sent:
-        first_holding = updated.last_holding_sent
-        msg_id2 = f"t8-holding2-{int(time.time())}"
-        payload2 = _make_payload(
-            msg_id=msg_id2, text="hello?",
-            from_phone=t8_from, chat_id=f"{t8_from}@s.whatsapp.net",
-        )
-        _post_webhook(payload2)
-        time.sleep(10)
-
-        updated2 = _get_storage().get(OPERATOR_ID, t8_phone)
-        if updated2 and first_holding:
-            no_repeat = updated2.last_holding_sent == first_holding
-            record(8, "Holding NOT repeated within hour", no_repeat, "debounce check")
+    # Session should still exist and stage should still be HANDED_OFF
+    # (bot responded but didn't change the stage)
+    still_handed_off = updated is not None and updated.stage == Stage.HANDED_OFF
+    # History should have grown (bot responded via conversation engine)
+    has_history = updated is not None and len(updated.history) > 0
+    record(
+        8,
+        "Bot active during HANDED_OFF (responds normally)",
+        still_handed_off and has_history,
+        f"stage={updated.stage.value if updated else '?'}, "
+        f"history_len={len(updated.history) if updated else 0}",
+    )
     _get_storage().delete(OPERATOR_ID, t8_phone)
 
 
-def test_9_24h_revert():
-    """HANDED_OFF for 25 hours → reverts to CONSIDERING on next message."""
+def test_9_owner_active_only_suppression():
+    """Only OWNER_ACTIVE suppresses the bot, not HANDED_OFF.
+
+    Verify: HANDED_OFF session gets a bot response (pipeline runs).
+    OWNER_ACTIVE session gets no response (pipeline skipped).
+    """
     _delete_session(CUSTOMER_PHONE)
-    session = _make_session(
-        stage=Stage.HANDED_OFF,
-        handed_off_at=datetime.utcnow() - timedelta(hours=25),
-    )
+    session = _make_session(stage=Stage.OWNER_ACTIVE)
     _set_session(session)
 
-    msg_id = f"t9-revert-{int(time.time())}"
-    payload = _make_payload(msg_id=msg_id, text="hi again")
+    msg_id = f"t9-owneractive-{int(time.time())}"
+    payload = _make_payload(msg_id=msg_id, text="hello there")
     resp = _post_webhook(payload)
-    time.sleep(20)  # wait for buffer debounce + pipeline (LLM may be slow)
+    time.sleep(10)
 
     updated = _get_session(CUSTOMER_PHONE)
-    reverted = updated is not None and updated.stage == Stage.CONSIDERING
-    record(9, "24h revert → CONSIDERING", reverted,
-           f"stage={updated.stage.value if updated else 'None'}")
+    # Should still be OWNER_ACTIVE — pipeline was skipped, no history added
+    still_owner = updated is not None and updated.stage == Stage.OWNER_ACTIVE
+    no_new_history = updated is not None and len(updated.history) == 0
+    record(
+        9,
+        "OWNER_ACTIVE suppresses bot (pipeline skipped)",
+        still_owner and no_new_history,
+        f"stage={updated.stage.value if updated else 'None'}, "
+        f"history={len(updated.history) if updated else '?'}",
+    )
     _delete_session(CUSTOMER_PHONE)
 
 
@@ -602,8 +604,8 @@ def main():
     test_7_rate_limit()
 
     print("\nHANDOFF & SESSION STAGES:")
-    test_8_holding_message()
-    test_9_24h_revert()
+    test_8_bot_active_during_handoff()
+    test_9_owner_active_only_suppression()
     test_10_resume_command()
     test_11_handled_command()
     test_12_passive_interruption()
