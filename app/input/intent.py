@@ -26,10 +26,13 @@ VALID_INTENTS = {"SALES", "NOT_SALES"}
 SALES_KEYWORDS = [
     "price", "available", "size", "colour", "color", "do you have",
     "want to buy", "how much", "delivery", "order", "stock",
-    "looking for", "need a", "need some", "shoes", "shirt", "bag",
+    "looking for", "need a", "need some",
     "buy", "purchase", "cost", "payment", "pay", "mpesa", "momo",
-    "mobile money", "catalog", "catalogue", "shop", "store",
-    "in stock", "any", "sell", "offer",
+    "mobile money", "catalog", "catalogue",
+    "in stock", "sell", "offer", "discount",
+    # NOTE: No product-specific words (shoes, shirt, bag, etc).
+    # The system sells any kind of product — product names are in
+    # the inventory, not in the intent classifier.
 ]
 
 NOT_SALES_KEYWORDS = [

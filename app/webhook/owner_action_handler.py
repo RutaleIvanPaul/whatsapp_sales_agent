@@ -162,10 +162,13 @@ async def _cmd_exclude(
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: exclude {phone}", operator)
         return
+    # Mutually exclusive: remove from included if present
+    if phone in operator.included_phones:
+        operator.included_phones.remove(phone)
     if phone not in operator.excluded_phones:
         operator.excluded_phones.append(phone)
-        if operator_adapter:
-            operator_adapter.save(operator)
+    if operator_adapter:
+        operator_adapter.save(operator)
     await messaging.send_text(
         operator.owner_personal_phone,
         f"Excluded {phone}. They will no longer receive replies.",
@@ -182,10 +185,13 @@ async def _cmd_include(
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: include {phone}", operator)
         return
+    # Mutually exclusive: remove from excluded if present
+    if phone in operator.excluded_phones:
+        operator.excluded_phones.remove(phone)
     if phone not in operator.included_phones:
         operator.included_phones.append(phone)
-        if operator_adapter:
-            operator_adapter.save(operator)
+    if operator_adapter:
+        operator_adapter.save(operator)
     await messaging.send_text(
         operator.owner_personal_phone,
         f"Included {phone}. They can now reach the assistant even if they are a saved contact.",
