@@ -30,38 +30,47 @@ class ContactsCache:
 
     async def load_for_operator(self, operator: Operator) -> None:
         token = decrypt(operator.whapi_channel_token, self._key)
-        url = f"{WHAPI_BASE}/contacts?token={token}"
+        base_url = f"{WHAPI_BASE}/contacts?token={token}"
         try:
+            phones: set[str] = set()
+            page_size = 500
+            offset = 0
+
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                resp = await client.get(url)
-                if resp.status_code >= 400:
-                    log(
-                        "error",
-                        component="contacts",
-                        error_type="load_failed",
-                        message=f"http_{resp.status_code}",
-                        operator_id=operator.operator_id,
-                    )
-                    return
+                while True:
+                    url = f"{base_url}&count={page_size}&offset={offset}"
+                    resp = await client.get(url)
+                    if resp.status_code >= 400:
+                        log(
+                            "error",
+                            component="contacts",
+                            error_type="load_failed",
+                            message=f"http_{resp.status_code}",
+                            operator_id=operator.operator_id,
+                        )
+                        break
 
-                data = resp.json()
-                raw_contacts = data.get("contacts", [])
-                phones: set[str] = set()
-                for c in raw_contacts:
-                    raw = c.get("id") or c.get("phone") or ""
-                    if not raw:
-                        continue
-                    try:
-                        phones.add(from_whapi(raw))
-                    except ValueError:
-                        continue
+                    data = resp.json()
+                    batch = data.get("contacts", [])
+                    for c in batch:
+                        raw = c.get("id") or c.get("phone") or ""
+                        if not raw:
+                            continue
+                        try:
+                            phones.add(from_whapi(raw))
+                        except ValueError:
+                            continue
 
-                self._contacts[operator.operator_id] = phones
-                log(
-                    "contacts_loaded",
-                    operator_id=operator.operator_id,
-                    contact_count=len(phones),
-                )
+                    if len(batch) < page_size:
+                        break  # last page
+                    offset += page_size
+
+            self._contacts[operator.operator_id] = phones
+            log(
+                "contacts_loaded",
+                operator_id=operator.operator_id,
+                contact_count=len(phones),
+            )
         except Exception as e:
             log(
                 "error",
