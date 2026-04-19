@@ -163,3 +163,322 @@ which is both unhelpful and a privacy concern.
 6. No raw error codes, stack traces, or technical identifiers
 
 **Date:** Phase 4 edge-case sweep (April 2026)
+
+---
+
+## 6. Bot-sent echo filtering (sent_tracker)
+
+**Decision:** Track every message ID returned by the Whapi send API in a
+TTL-expiring set (`app/utils/sent_tracker.py`). When a `from_me: true`
+webhook arrives, check the set: if the ID is present, it's a bot echo
+(ignore). If absent, it's genuine operator typing (route to
+`owner_action_handler`).
+
+**Why this was needed:** Whapi fires `from_me: true` for ALL messages
+sent from the linked WhatsApp number — whether sent by the bot via
+the API or by the operator physically typing on their phone. Without
+filtering, every bot reply triggered `owner_typed_in_customer_thread`,
+which set `session.stage = OWNER_ACTIVE`, permanently silencing the bot
+after the first reply.
+
+**Why not a stage-based filter:** The original fix was to only trigger
+passive interruption when `session.stage == HANDED_OFF`. This was
+rejected because the operator should be able to interrupt at any time
+(e.g., typing in a customer thread during EXPLORING to correct the bot),
+not just after a handoff alert.
+
+**TECH DEBT — missed ID capture:** If the Whapi API accepts our POST
+but we fail to read the response body (network drop after server-side
+accept, response parsing error), the message ID won't be captured. The
+echo will then be treated as operator typing, causing a false
+OWNER_ACTIVE flip. This is:
+- Extremely rare (HTTP responses arrive atomically, and we retry 3x)
+- Self-healing (operator can type `resume` to un-pause the bot)
+- Not worth adding a secondary signal for now (Whapi has no custom
+  metadata field that survives the echo; zero-width Unicode in message
+  body risks being stripped by WhatsApp)
+
+Accepted as known risk.
+
+**Production fix options (in order of robustness):**
+1. Whapi webhook delivery confirmation — if Whapi offers a way to mark
+   outbound-API messages distinctly in the webhook payload (e.g. a
+   `source: "api"` field), filter on that instead of tracking IDs. The
+   raw payload already shows `"source": "api"` — but this field was
+   discovered late and needs validation that it's consistently present.
+2. Zero-width Unicode marker — embed a zero-width space (U+200B) at
+   the end of every bot-sent message body. If the echo arrives with
+   the marker, it's a bot echo. Risk: WhatsApp may strip it.
+3. Timing heuristic — if a from_me:true message arrives within 3
+   seconds of a message_sent log for the same chat_id, treat as echo.
+   Fragile under load.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 7. Quoted message extraction for reply-to context
+
+**Decision:** When a customer replies to a specific message (long-press
++ Reply in WhatsApp), `input/text.py` extracts the quoted content from
+`msg.context.quoted_content` and prepends it as
+`[replying to: "..."] customer's text`. This gives the LLM context for
+what "this", "that one", or "I want it" refers to.
+
+**Whapi payload structure:** `msg.context.quoted_content.body` for text
+replies, `msg.context.quoted_content.caption` for image/media replies.
+This was discovered by inspecting the raw webhook payload during Phase 5
+testing — the Whapi documentation doesn't clearly document this field.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 8. Resume/handled commands find both HANDED_OFF and OWNER_ACTIVE sessions
+
+**Decision:** The `resume` and `handled` owner commands search for
+sessions in BOTH `Stage.HANDED_OFF` and `Stage.OWNER_ACTIVE` when
+looking for the target session to act on.
+
+**Why:** When the operator manually types in a customer thread (passive
+interruption), the session stage becomes `OWNER_ACTIVE`. If the operator
+then sends `resume` in the control thread, the command needs to find
+that session. Originally it only searched for `HANDED_OFF`, which meant
+there was no way to resume after a manual interruption — the operator
+got "No active handoff."
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 9. Single image URL per product (MVP simplification)
+
+**Decision:** Each Product has a single `image_url` field. Multi-image
+support is deferred.
+
+**Why:** Google Sheets as inventory source makes multi-image storage
+awkward. MVP catalogue sizes (15-200 products) do not require vector
+search to return good results.
+
+**Future path:** `product_images` table with CLIP embeddings when moving
+to Supabase. Documented in SPEC.md S25 and S26.
+
+**Date:** Phase 2 (April 2026)
+
+---
+
+## 10. RapidFuzz fuzzy search over vector search (MVP)
+
+**Decision:** Text-based fuzzy search using RapidFuzz with bigram
+decomposition, rather than vector embedding similarity search.
+
+**Why:** Adequate for text-based queries on small catalogues. No
+infrastructure dependency. Bigram enhancement handles verbose vision
+descriptions adequately. Threshold 70 preserves precision.
+
+**Future path:** Replace search() internals in cache.py with pgvector
+cosine similarity. The search() interface is unchanged — the swap is
+invisible to business logic.
+
+**Date:** Phase 2 (April 2026)
+
+---
+
+## 11. Voice notes return placeholder (MVP)
+
+**Decision:** `voice.py` returns a fixed placeholder rather than
+transcribing audio.
+
+**Why:** Whisper integration adds infrastructure complexity and cost that
+is not justified before real operator usage data exists. The placeholder
+degrades gracefully — the LLM asks the customer to type.
+
+**Future path:** TranscriptionAdapter ABC defined in SPEC.md S7.
+Implement whisper.py when operators report voice note usage is
+significant.
+
+**Date:** Phase 4 (April 2026)
+
+---
+
+## 12. Social media export over scraping
+
+**Decision:** Build inventory from operators' own Instagram/TikTok data
+exports rather than scraping their profiles.
+
+**Why:** Instagram and TikTok scraping violates their ToS and is
+technically unreliable (auth walls, rate limits, layout changes).
+Platform data exports are legitimate, stable, and give the same result.
+
+**Trade-off:** Semi-automated — operator does one export step — rather
+than fully automated. This is acceptable because inventory building is
+a one-time setup task, not a daily operation.
+
+**Date:** Post-MVP design (April 2026)
+
+---
+
+## 13. Manual Whapi channel creation for MVP onboarding
+
+**Decision:** Channels are created manually in the Whapi dashboard for
+MVP. Programmatic creation via Whapi Partner API is documented but not
+implemented.
+
+**Why:** Programmatic channel creation requires Whapi partner plan. MVP
+operator count does not justify the cost.
+
+**Future path:** `--auto-channel` flag in `onboard_operator.py` when
+Whapi partner plan is activated. Documented in SPEC.md S23.
+
+**Date:** Phase 3 (April 2026)
+
+---
+
+## 14. Phase 7 human feel evaluation as mandatory gate
+
+**Decision:** A dedicated Phase 7 consisting entirely of human evaluation
+is required before MVP sign-off. No code deliverables.
+
+**Why:** Technical correctness is necessary but not sufficient. The
+product's core promise is that customers cannot tell they are talking to
+a bot. This requires deliberate human evaluation, not automated testing.
+10 conversation types, 10 evaluation criteria, and an independent
+reviewer test (give the log to someone who didn't know — they should not
+notice).
+
+**Date:** Post-MVP design (April 2026)
+
+---
+
+## 15. Two-list exclusion/inclusion system
+
+**Decision:** Operator manages two lists on their Operator record:
+`excluded_phones` (manually blocked) and `included_phones` (whitelisted
+saved contacts). The receiver checks included → contacts cache → excluded
+in that order.
+
+**Why not simpler (exclude-only):** The contacts cache already blocks all
+saved contacts. But some saved contacts ARE customers (e.g., repeat buyer
+the operator added). The `include` list overrides the contacts cache for
+specific numbers. Without it, there's no way to let a saved contact
+through.
+
+**Why not smarter (auto-detect):** Auto-detecting "who should be excluded"
+requires ML intent classification, which is a separate feature (intent
+gate). The exclusion list handles the explicit case where the operator
+knows a specific person should not receive bot responses.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 16. Two-stage intent gate (keyword first, LLM fallback)
+
+**Decision:** New contacts are classified as SALES or NOT_SALES before
+entering the conversation engine. Stage 1 is a fast keyword check (no
+API). Stage 2 is an LLM call (cheap model) only for ambiguous messages.
+
+**Why session-state-aware:** The intent gate only fires when there is no
+session or the session history is empty. Existing customers (history has
+turns) skip it entirely. This means <10% of messages ever reach the
+classifier.
+
+**Why keyword first:** Most first messages contain obvious signals. "do
+you have Nike shoes?" contains "do you have" and "shoes". "wrong number"
+contains "wrong number". These can be caught in microseconds without an
+API call. The LLM is only needed for genuinely ambiguous messages like
+"hello" (which could be either a customer greeting or a friend saying
+hi).
+
+**Why fail open:** On any error or ambiguity, the gate returns SALES.
+Silencing a real customer is worse than engaging with a non-customer.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 17. Customer text delimiters in all classifiers
+
+**Decision:** Both the language classifier (`language.py`) and intent
+classifier (`intent.py`) wrap customer text in `=== CUSTOMER MESSAGE ===`
+delimiters per CLAUDE.md rule 10.
+
+**Why:** Rule 10 is non-negotiable: "Customer input always wrapped in
+delimiters." The language classifier was missing them (pre-existing tech
+debt from Phase 4). Fixed alongside the intent gate implementation.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 18. Bot stays active during HANDED_OFF (no holding message)
+
+**Decision:** When a handoff is triggered, the bot continues responding
+normally. The session stage is HANDED_OFF but the pipeline does NOT skip
+or send a holding message. The bot only stops when the operator
+physically types in the customer thread (from_me: true → OWNER_ACTIVE).
+
+**Previous design:** HANDED_OFF suppressed the bot and sent a holding
+message ("Still here! Just sorting a few things out for you.") once per
+hour, with a 24-hour inactivity revert back to CONSIDERING.
+
+**Why it was changed:** During live testing, the holding message felt
+impersonal and broke the illusion of talking to a human. Customers may
+want to keep browsing even after expressing buying intent — they don't
+know a handoff happened, so they expect the conversation to continue.
+The operator takes over when ready; the bot fills the gap naturally
+until then.
+
+**What was removed:**
+- Holding message logic in pipeline/runner.py
+- 24-hour inactivity revert logic
+- last_holding_sent field is unused (kept in Session model for now,
+  can be removed in a future cleanup)
+
+**What remains:**
+- OWNER_ACTIVE is the sole bot-suppression trigger
+- The operator alerts still fire on handoff
+- resume/handled commands still work
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 19. Whapi source field as secondary echo filter
+
+**Decision:** In addition to sent_tracker ID matching, the receiver
+also checks `msg.source == "api"` to identify bot-sent echoes. This
+is a secondary signal that does not depend on capturing the message
+ID from the Whapi send response.
+
+**Why:** During live testing, some image sends failed to return a
+parseable message ID (network timing, response format variations).
+The sent_tracker missed these IDs, and the echoes were treated as
+operator typing — flipping the session to OWNER_ACTIVE and silencing
+the bot. The `source: "api"` field is set by Whapi on all API-sent
+messages and is always present in the webhook payload.
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 20. Response time optimisation before Phase 6
+
+**Decision:** Optimise response latency before Phase 6 so Phase 7 human
+feel evaluation is not blocked by perceptible delays.
+
+**Why:** 10-35 second response times during Phase 5 testing. No human
+salesperson takes 35 seconds to reply on WhatsApp. The biggest
+contributor was the handoff alert blocking the pipeline (22s).
+
+**Changes made:**
+- Handoff alert: fire-and-forget via asyncio.create_task — pipeline no
+  longer waits for the alert to send
+- Language classifier: two-stage with keyword pre-filter — obvious
+  English/Luganda caught in microseconds, LLM only for ambiguous
+- Typing time: adaptive — 1s for short messages, 2s for >200 chars
+- Pipeline timing: pipeline_timing log event with per-stage breakdown
+
+**Buffer debounce kept at 3s** — user decision.
+
+**Date:** Phase 5 (April 2026)

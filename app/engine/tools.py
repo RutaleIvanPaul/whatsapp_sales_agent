@@ -183,18 +183,20 @@ async def handle_trigger_handoff(
     summary: str,
     session: Session,
     operator: Operator,
+    messaging: "MessagingAdapter",
+    storage: "StorageAdapter",
+    inventory: "InventoryAdapter",
     triggering_message: str,
 ) -> str:
-    """Phase 4 stub — flips the session to HANDED_OFF and logs.
+    """Full handoff — alert operator with wa.me link. See engine/handoff.py."""
+    from app.engine import handoff
 
-    Full handoff (alert + wa.me link to operator) lives in Phase 5.
-    """
-    session.stage = Stage.HANDED_OFF
-    session.handed_off_at = datetime.utcnow()
-
-    log(
-        "handoff_triggered",
-        operator_id=operator.operator_id,
-        summary=(summary or "")[:200],
+    return await handoff.trigger(
+        session=session,
+        summary=summary,
+        operator=operator,
+        messaging=messaging,
+        storage=storage,
+        inventory=inventory,
+        triggering_message=triggering_message,
     )
-    return json.dumps({"status": "handoff_triggered_phase4_stub"})

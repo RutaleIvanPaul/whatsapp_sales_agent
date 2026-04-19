@@ -38,8 +38,8 @@ S24 Known constraints and accepted risks
 Salelular connects to an operator's WhatsApp number as a linked device
 (Whapi.cloud). The operator keeps their number and app. The bot handles
 customer messages. When a customer is ready to buy, the operator is alerted
-on their personal number and takes over via a relay system that forwards
-their replies to the customer from the shop number.
+on their personal number and takes over by typing directly in the
+customer's thread on the shop's WhatsApp.
 
 RUNTIME PIPELINE (read this to understand the full flow):
 
@@ -189,8 +189,16 @@ INCOMING WEBHOOK PAYLOAD:
 
   image.link is stable — Whapi hosts it because auto_download is enabled.
   No need to download immediately. URL does not expire.
-  from_me: true means the operator sent from their phone.
+  from_me: true means ANY message sent from the linked WhatsApp number,
+  including bot-sent messages echoing back from the API. The receiver
+  filters bot echoes via sent_tracker (see DECISIONS.md #6). Only
+  genuine operator typing reaches owner_action_handler.
   chat_id ending @g.us is a group message — always discard.
+
+  Quoted messages (reply-to): Whapi includes the quoted message in
+  msg.context.quoted_content. For text replies: .body field. For
+  image/media replies: .caption field. The input processor prepends
+  this as [replying to: "..."] so the LLM knows what "this" refers to.
 
 SENDING MESSAGES:
   Text:
@@ -291,6 +299,8 @@ OPERATOR (app/models/operator.py):
       llm_model: str                    # e.g. "claude-sonnet-4-6"
       status: OperatorStatus
       created_at: datetime
+      excluded_phones: list[str]        # manually blocked numbers
+      included_phones: list[str]        # whitelisted saved contacts
 
 SESSION (app/models/session.py):
 
@@ -359,7 +369,9 @@ PROCESSING ORDER — every step must pass before the next:
        true  → call owner_action_handler(payload, operator), return 200
        false → continue
   8. Check chat_id — ends with @g.us: discard, return 200
-  9. Check sender phone against contacts cache — known contact: discard, return 200
+  9. Check sender against included_phones — if whitelisted, skip contacts filter
+  9a. Check sender phone against contacts cache — known contact: discard, return 200
+  9b. Check sender against excluded_phones — if excluded: discard, return 200
   10. Return 200 OK
   11. queue.put_nowait(payload, operator)  ← fire and forget
 
@@ -465,6 +477,27 @@ HANDLER — image.py:
 HANDLER — voice.py (deferred — MVP placeholder):
   Return "[voice note received — please type your message]"
   LLM handles this gracefully by asking customer to type.
+
+  FUTURE IMPLEMENTATION:
+    Use OpenAI Whisper API or local Whisper model.
+    whisper.py in adapters/transcription/ following the existing adapter pattern.
+
+    TranscriptionAdapter ABC:
+      async def transcribe(self, audio_url: str) -> str
+
+    voice.py calls transcription adapter instead of returning placeholder.
+    On failure: returns placeholder (same as now).
+
+    Audio from Whapi arrives as a URL in voice.link field
+    (auto_download enabled, stable URL).
+
+    Model options:
+      Hosted: OpenAI Whisper API (~$0.006/min)
+      Local:  whisper.cpp or faster-whisper (free, runs on server)
+
+    For Ugandan English and mixed Luganda content, the large-v3 Whisper
+    model performs best. The medium model is a good balance of speed and
+    accuracy for MVP.
 
 HANDLER — link.py:
   Input: message payload where type == 'link_preview' or text containing URL
@@ -774,8 +807,13 @@ trigger(session, summary, operator, triggering_message):
 
   5. LLM then writes its natural closing message to the customer.
      The handoff tool returns before the LLM writes this reply.
-     Example: "I've passed your details to the team — they'll be in
-               touch with you shortly!"
+     CRITICAL: The closing message must sound like a natural human pause.
+     The customer must never know they are talking to a bot or that a
+     handover is happening. Never use phrases like "I've passed you to
+     the team" or "our team will be with you shortly." Instead use
+     phrases like "Let me sort that out for you and come back shortly"
+     or "Give me a moment on that." This rule is enforced in the system
+     prompt (app/engine/system_prompt.py).
 
   NOTE on concurrent handoffs:
     Multiple customers can be in HANDED_OFF simultaneously. There is no
@@ -787,11 +825,11 @@ OWNER COMMANDS (in owner_action_handler.py):
   Comparison: strip, lowercase. Phone argument normalised to E.164.
 
   "resume" or "resume {phone}":
-    Find HANDED_OFF session for this operator:
+    Find paused session (HANDED_OFF or OWNER_ACTIVE) for this operator:
       If {phone} provided: find session for that customer.
-      If not: if exactly one HANDED_OFF session exists, use it; else reply
-        "Please specify: resume {phone}. Active handoffs: {list}".
-    If no HANDED_OFF session: reply "No active handoff."
+      If not: if exactly one paused session exists, use it; else reply
+        with disambiguation list.
+    If no paused session: reply "No active handoff."
     Set session.stage = CONSIDERING.
     Persist session.
     Bot sends the customer: "I'm still here if you'd like to continue
@@ -804,26 +842,37 @@ OWNER COMMANDS (in owner_action_handler.py):
     Bot suppressed for that customer (operator handles directly from
     the shop's WhatsApp).
 
+  "exclude {phone}":
+    Add phone to operator.excluded_phones. Persist. Confirm.
+    That number will be silently ignored by the receiver.
+
+  "include {phone}":
+    Add phone to operator.included_phones. Persist. Confirm.
+    That number bypasses the saved-contacts filter and can reach the bot.
+
+  "remove {phone}":
+    Remove from whichever list (excluded or included). Persist. Confirm.
+
+  "list excluded" / "list included":
+    Send the current list to the operator.
+
   Unrecognised text in the control thread:
-    Reply: "Unrecognised command. Available: resume {phone}, handled {phone}."
-    Do NOT forward anywhere.
+    Reply with available commands. Do NOT forward anywhere.
 
-HOLDING MESSAGE:
-  While session.stage = HANDED_OFF and customer sends another message:
-    Check session.last_holding_sent.
-    If None or > 1 hour ago:
-      Send: "The team has been notified and will be with you shortly!"
-      Set session.last_holding_sent = now().
-    Else: do nothing (do not spam the customer).
+BOT BEHAVIOUR DURING HANDED_OFF:
+  The bot continues responding normally while stage = HANDED_OFF.
+  The customer does not know a handoff has happened. They can keep
+  browsing, asking questions, or even trigger another handoff.
 
-24-HOUR INACTIVITY REVERT:
-  If session.stage = HANDED_OFF
-  AND (now() - session.handed_off_at) > 24 hours
-  AND customer sends a new message:
-    Set session.stage = CONSIDERING.
-    Bot responds normally.
-    Bot message: "I'm still here if you'd like to keep browsing!"
-    (This only fires if customer messages — bot never initiates.)
+  The bot only stops when the operator physically types in the
+  customer thread (from_me: true → OWNER_ACTIVE). This is the sole
+  bot-suppression trigger.
+
+  Design rationale: holding messages ("still here, sorting things out")
+  felt impersonal and broke the illusion that the customer is talking
+  to a human. Customers may want to keep browsing even after expressing
+  buying intent. The operator takes over when they're ready — the bot
+  fills the gap naturally until then.
 
 PASSIVE INTERRUPTION DETECTION (Mode 2 — the takeover path):
   In webhook receiver, from_me: true in a customer chat:
@@ -927,7 +976,7 @@ Required log events and their fields:
   message_sent:         operator_id, phone_hash, type, typing_time_ms
   send_failed:          operator_id, phone_hash, attempt, error_code
   handoff_triggered:    operator_id, phone_hash
-  owner_relay_sent:     operator_id, phone_hash, char_count
+  owner_handoff_alert:  operator_id, phone_hash
   session_updated:      operator_id, phone_hash, fields_changed
   owner_command:        operator_id, command_type
   session_disconnect:   operator_id, channel_id
@@ -980,7 +1029,7 @@ Google Sheets rate limit (429)        | Exponential backoff 1s, 2s, 4s
 Process restart                       | Queue lost (acceptable), sessions in DB survive
 Long LLM reply (>1500 chars)          | Split at paragraph boundary
 Phone number format mismatch          | E.164 normalise before comparison
-Second handoff while relay active     | Alert sent, operator must clear first relay
+Second handoff while first active     | Both alerts sent, operator manages via phone arg
 Whapi health check fails              | Trigger disconnect flow if not already triggered
 
 ---
@@ -1157,7 +1206,7 @@ PHASE 5 — Handoff and owner control
   Files: app/engine/handoff.py, app/webhook/owner_action_handler.py,
          app/webhook/session_disconnect_handler.py (extend),
          background health monitor
-  Goal: full handoff flow — buying intent → operator alert → relay → resume.
+  Goal: full handoff flow — buying intent → operator alert → direct reply → resume.
   First testable moment: say "I'll take it", see notification on personal number,
   reply in control thread, see it arrive on customer side.
   Read: S14, S2 (health monitoring section)
@@ -1170,6 +1219,40 @@ PHASE 6 — Resilience
         concurrent users, session expiry.
   First testable moment: run integration test suite against all S18 scenarios.
   Read: S18, S20
+
+PHASE 7 — Human Feel Evaluation
+  No code deliverables. This phase is deliberate human evaluation.
+  Goal: confirm the system passes as a human salesperson in a real
+  WhatsApp conversation. Not feature completeness — feel.
+
+  Conduct at least 10 full conversations covering:
+    - Customer who knows what they want
+    - Customer browsing with no specific product
+    - Customer who sends an image of something they saw online
+    - Customer asking about price, sizes, availability
+    - Customer who haggles or asks for a discount
+    - Customer who goes quiet and returns later
+    - Customer writing in mixed English and Luganda
+    - Customer who reaches buying intent → handoff
+    - Operator taking over and resuming the bot
+    - Customer who is rude or sends nonsense
+
+  All 10 evaluation criteria must pass:
+    1. No message sounds like it was written by a bot
+    2. No message reveals awareness of being a system
+    3. Responses are appropriately brief (WhatsApp, not email)
+    4. Bot asks one question at a time, never a list
+    5. Handoff feels like a natural pause, not an announcement
+    6. Holding message sounds human
+    7. Resuming after 24h sounds human
+    8. Operator takeover transition is invisible
+    9. Bot handles confusion like a patient human
+    10. Independent reviewer test: give the log to someone who
+        did not know they were talking to a bot. They should
+        not notice.
+
+  Pass condition: all 10 conversations, all 10 criteria, reviewer
+  test passes. Output is a signed-off evaluation checklist.
 
 ---
 
@@ -1197,11 +1280,36 @@ WHAT THE OPERATOR DOES:
      This is the only ongoing maintenance requirement.
      The system alerts them if the session drops.
 
+ONBOARDING PATHS:
+
+  MANUAL CHANNEL CREATION (MVP — free Whapi plan):
+    Developer creates channel manually in Whapi dashboard.
+    Copies channel_id and channel_token.
+    Runs onboard_operator.py with --manual-channel flag.
+    Script accepts channel_id and channel_token as inputs,
+    configures webhook, stores encrypted in database.
+
+  PROGRAMMATIC CHANNEL CREATION (scale — Whapi partner plan):
+    onboard_operator.py calls Whapi Partner API to create channel.
+    Fully automated. No manual dashboard steps.
+    Requires WHAPI_PARTNER_TOKEN and WHAPI_PROJECT_ID.
+    Gated behind --auto-channel flag.
+
+QR CODE DELIVERY:
+  After channel creation, the script fetches the QR code from Whapi.
+  Delivery options:
+    A: Send QR as image to operator's personal WhatsApp
+       (if another channel is already available)
+    B: Generate a self-contained HTML page displaying the QR with
+       the image embedded as base64. Print the file path to console.
+       Operator opens it on any device and scans. Default option.
+    C: Save QR as PNG file and email it.
+
 WHAT THE SCRIPT DOES (scripts/onboard_operator.py):
   1. Generate 32-byte random secret for webhook auth
-  2. Create Whapi channel via Partner API
+  2. Create or accept Whapi channel (--manual-channel or --auto-channel)
   3. Configure channel (webhook URL, secret header, events, auto_download)
-  4. Generate QR code URL, display it or email it to operator
+  4. Deliver QR code (option A, B, or C)
   5. Wait for users.post webhook confirming number connected
   6. Create operator record in DB (encrypt sensitive fields)
   7. Load inventory from Google Sheet
@@ -1239,9 +1347,10 @@ SQLite concurrency limit:
   Write contention at high concurrent users.
   Acceptable for MVP. Postgres swap documented.
 
-Single active relay per operator:
-  Only one customer can be in relay at a time. Second handoff alert
-  is sent but relay does not activate until first is cleared.
+Concurrent handoffs per operator:
+  Multiple customers can be in HANDED_OFF simultaneously. The operator
+  manages each independently via resume/handled with phone args.
+  A warning is logged when a concurrent handoff occurs.
   Acceptable for MVP. Multi-agent routing is extension point.
 
 Voice notes deferred:
@@ -1251,3 +1360,232 @@ Voice notes deferred:
 Luganda LLM capability:
   Major LLMs have limited Luganda capability.
   Mitigation: language escalation to operator. Canned Luganda response.
+
+---
+
+## S25 — Future Data Model: Multi-Image Inventory
+
+The current single image_url field on Product is a temporary MVP
+simplification. The target data model separates products from their images:
+
+  products table (existing, extended):
+    id, name, price, description, keywords, available, slug, attributes
+    (image_url retained for MVP, deprecated when product_images is implemented)
+
+  product_images table (future):
+    id            uuid, primary key
+    product_id    foreign key → products.id
+    image_url     public HTTPS URL (hosted in Supabase Storage,
+                  Cloudflare R2, or S3)
+    angle_label   string | null   (e.g. "front", "side", "detail")
+    display_order integer          (1 = primary/hero image)
+    embedding     vector(512)      (CLIP embedding, stored in pgvector)
+    created_at    timestamp
+
+When this table exists:
+  - Search compares customer photo embedding against ALL product image
+    embeddings, not just one per product
+  - The product with the highest-scoring image is returned
+  - Multiple angles increase the chance of a match
+
+---
+
+## S26 — Vector Image Search
+
+HOW EMBEDDINGS WORK:
+  CLIP (Contrastive Language-Image Pretraining) is an open-source model
+  that converts images into vectors of numbers (embeddings). Similar-looking
+  images produce similar vectors.
+
+  Setup time (once per image, at inventory import):
+    Image → CLIP model → 512-dimensional embedding vector
+    → stored in product_images.embedding
+
+  Search time (every customer photo, no AI model called):
+    Customer photo → CLIP model → embedding vector
+    → cosine similarity against all stored embeddings
+    → nearest matches returned
+    → database operation only, not an AI call
+
+  The similarity calculation is pure mathematics (dot product). At search
+  time, no AI model is invoked — only the vector database query runs.
+
+DATABASE:
+  Supabase with pgvector extension handles this natively. pgvector adds a
+  vector column type and similarity operators. No separate vector database
+  needed.
+
+IMPLEMENTATION APPROACH:
+  This replaces the RapidFuzz fuzzy search in adapters/inventory/cache.py
+  when the product_images table exists. The search() interface is unchanged.
+  The internals switch from string matching to vector similarity.
+
+CLIP OPTIONS:
+  Self-hosted: openai/clip-vit-base-patch32 via HuggingFace
+    (free, runs locally, no API cost)
+  Hosted: various embedding API providers
+
+---
+
+## S27 — Batch Inventory Import
+
+PROBLEM:
+  Operators cannot enter products one by one. They may have 50-200 products.
+  Each product may have 1-5 images from different angles. Manual entry is
+  not viable.
+
+BATCH IMPORT PROCESS:
+  Operator prepares:
+    - A CSV file with product data (same columns as Google Sheet)
+    - A folder of product images named by product ID
+      e.g. nike-air-force-1_front.jpg, nike-air-force-1_side.jpg
+
+  Import script (scripts/import_inventory.py) does:
+    1. Read CSV → validate required columns → parse products
+    2. For each product: find matching images in the image folder
+       by product ID prefix
+    3. Upload each image to cloud storage → get public URL
+    4. Generate CLIP embedding for each image
+    5. Insert product record into products table
+    6. Insert one row per image into product_images table with URL
+       and embedding
+    7. Print summary: N products imported, M images processed, K errors
+
+  The operator runs this once to seed their inventory. Subsequent updates:
+  re-run for new products, or use the Google Sheet for simple text field
+  updates.
+
+GOOGLE SHEET ROLE POST-IMPORT:
+  The Google Sheet remains useful for quick text edits (price changes,
+  availability toggles, description updates). Image management moves to
+  the import script.
+
+---
+
+## S28 — Social Media Export Inventory Builder
+
+APPROACH:
+  Scraping Instagram or TikTok is against their terms of service and
+  technically unreliable. Instead, operators export their own data using
+  the platform's built-in export tools.
+
+  Instagram: Settings → Your Activity → Download Your Information
+    Returns a ZIP containing all posts, images, and captions.
+
+  TikTok: Settings → Privacy → Download Your Data
+    Returns a ZIP containing videos and metadata.
+
+PROCESSING:
+  Script (scripts/build_inventory_from_export.py) processes the ZIP file:
+
+  1. Extract all images (Instagram) or thumbnail frames from videos
+     (TikTok) using ffmpeg
+  2. For each image: pass to vision LLM with prompt:
+     "This is a product photo from a shop's social media.
+      Extract: product name, one-sentence description, 3-5 search
+      keywords, and any visible attributes like size, colour, or
+      material. Use the caption if provided: {caption}"
+  3. Build a draft product record from the LLM output
+  4. Present all draft records to the operator for review
+     (print to console or generate a review CSV)
+  5. Operator confirms, edits, or rejects each draft
+  6. Confirmed records go through the batch import process (S27)
+     — images uploaded, embeddings generated, records inserted
+
+OUTPUT:
+  A draft inventory CSV the operator reviews before anything is committed
+  to the database. No data is written until the operator confirms.
+
+NOTE:
+  This is semi-automated. The operator does a one-time export from their
+  social media platform. The script does the heavy lifting but the operator
+  reviews before anything goes live. This is intentional — product data
+  accuracy is critical.
+
+---
+
+## S29 — Self-Serve Onboarding Web App
+
+WHAT IT IS:
+  A separate web application that allows operators to sign up and configure
+  Salelular themselves without developer involvement.
+
+WHAT IT IS NOT:
+  Part of the core bot. It is a separate deployment with its own codebase.
+  It shares only the operators database table with the core bot. They never
+  call each other directly.
+
+OPERATOR JOURNEY:
+  1. Operator visits signup page
+  2. Enters shop name, their name, personal WhatsApp number
+  3. Enters the WhatsApp number they want to connect as shop number
+  4. Uploads Google Sheet ID or connects sheet via Google OAuth
+  5. Provides Luganda canned response text
+  6. Web app calls Whapi Partner API to create channel
+  7. Web app generates QR code and displays it on screen
+  8. Operator scans QR from their phone (WhatsApp > Linked Devices)
+  9. Web app receives users.post webhook confirming connection
+  10. Web app writes operator record to database
+  11. Core bot detects new active operator on next health check
+  12. Operator is live
+
+TECH STACK (suggested):
+  Next.js or plain HTML/JS frontend
+  Same Python backend or a lightweight separate service
+  Supabase for shared database access
+  Stripe or local payment provider for subscription billing
+
+INTEGRATION POINT:
+  The web app writes to the operators table.
+  The core bot reads from the operators table.
+  Schema is already designed for this (operator_id, status fields exist).
+  No API contract between web app and core bot needed.
+
+---
+
+## S30 — Intent Gate
+
+FILE: app/input/intent.py
+
+PURPOSE:
+  Silently drop non-sales first messages from unknown contacts.
+  Prevents the bot from engaging with wrong-number texts, personal
+  messages, or random noise. The customer receives no reply — silence
+  is the correct response, as it does not reveal monitoring.
+
+SESSION-STATE AWARENESS:
+  The intent gate does NOT fire for every message. It checks the
+  session state first:
+
+  No session or empty history → run intent classification
+  Session with history turns  → skip (already a customer)
+  HANDED_OFF or OWNER_ACTIVE  → skip (handled separately)
+
+  This means the vast majority of messages never hit the classifier.
+
+TWO-STAGE CLASSIFICATION:
+
+  Stage 1 — keyword check (sync, microseconds, no API):
+    Sales keywords: price, available, size, colour, do you have,
+      want to buy, how much, delivery, order, stock, looking for, etc.
+    Not-sales keywords: wrong number, is this, who is this, sorry wrong
+    Sales match → SALES (continue to engine)
+    Not-sales match AND no sales → NOT_SALES (silent drop)
+    Neither → Stage 2
+
+  Stage 2 — LLM classifier (cheap model, max 10 tokens):
+    Only fires for ambiguous first messages.
+    Uses === CUSTOMER MESSAGE === delimiters (CLAUDE.md rule 10).
+    Fail open: defaults to SALES on any error or unrecognised response.
+
+BEHAVIOUR ON NOT_SALES:
+  Silent. No reply. No session created. No session updated.
+  Log: intent_gate_silent with phone_hash, operator_id, chars.
+  Never log message content.
+
+  If the same person messages again with sales intent, they will be
+  re-classified (history is still empty) and pass through.
+
+LOGGING:
+  intent_classified: result, stage (keyword|llm), chars, duration_ms
+  intent_gate_silent: phone_hash, operator_id, chars

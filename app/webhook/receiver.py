@@ -9,6 +9,7 @@ from app.models.operator import OperatorStatus
 from app.utils.crypto import decrypt
 from app.utils.log import log
 from app.utils.phone import from_whapi, hash_for_log
+from app.utils.sent_tracker import sent_tracker
 from app.webhook import owner_action_handler, session_disconnect_handler
 
 router = APIRouter()
@@ -111,8 +112,23 @@ async def receive(request: Request) -> Response:
         for msg in payload.get("messages", []):
             msg_id = msg.get("id", "")
 
+
             if msg.get("from_me"):
-                asyncio.create_task(owner_action_handler.handle(payload, operator))
+                # Check if this is a bot-sent echo (our own outbound message
+                # echoing back from Whapi) or a genuine operator action.
+                # Two signals: sent_tracker ID match OR Whapi source field.
+                if sent_tracker.is_bot_sent(msg_id):
+                    continue  # Bot echo — ignore silently
+                if msg.get("source") == "api":
+                    continue  # Bot echo — Whapi marks API-sent messages
+                # Genuine operator action — passive interruption or from
+                # operator's phone. Route to owner_action_handler.
+                asyncio.create_task(
+                    owner_action_handler.handle(
+                        payload, operator, state.storage_adapter,
+                        state.messaging_adapter, state.operator_adapter,
+                    )
+                )
                 continue
 
             chat_id = msg.get("chat_id", "")
@@ -146,10 +162,37 @@ async def receive(request: Request) -> Response:
                 )
                 continue
 
-            if state.contacts_cache.is_contact(operator.operator_id, sender_phone):
+            # Control thread: operator's personal phone sending TO the
+            # shop number. Must be checked BEFORE contacts filter —
+            # the operator's phone may be in the saved contacts list.
+            if sender_phone == operator.owner_personal_phone:
+                asyncio.create_task(
+                    owner_action_handler.handle(
+                        payload, operator, state.storage_adapter,
+                        state.messaging_adapter, state.operator_adapter,
+                    )
+                )
+                continue
+
+            # Step 8: Include override — whitelisted contacts bypass filter
+            included = set(operator.included_phones)
+            if sender_phone not in included:
+                # Step 9: Contacts cache — saved contacts excluded by default
+                if state.contacts_cache.is_contact(operator.operator_id, sender_phone):
+                    log(
+                        "message_discarded",
+                        reason="saved_contact",
+                        phone_hash=hash_for_log(sender_phone),
+                        message_id=msg_id,
+                        operator_id=operator.operator_id,
+                    )
+                    continue
+
+            # Step 9.5: Manual exclusion list
+            if sender_phone in set(operator.excluded_phones):
                 log(
                     "message_discarded",
-                    reason="saved_contact",
+                    reason="excluded",
                     phone_hash=hash_for_log(sender_phone),
                     message_id=msg_id,
                     operator_id=operator.operator_id,

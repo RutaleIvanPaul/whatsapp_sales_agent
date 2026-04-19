@@ -8,6 +8,7 @@ from app.adapters.messaging.base import MessagingAdapter
 from app.adapters.storage.base import StorageAdapter
 from app.adapters.vision.base import VisionAdapter
 from app.engine import conversation
+from app.input import intent as intent_mod
 from app.input import language as language_mod
 from app.input import processor
 from app.models.operator import Operator
@@ -15,6 +16,7 @@ from app.models.session import Session, Stage
 from app.pipeline import response_builder
 from app.utils.log import log
 from app.utils.phone import from_whapi, hash_for_log, to_whapi
+import time as _time
 
 MAX_ALERT_CHARS = 200
 
@@ -52,23 +54,60 @@ async def run(
         return
 
     phone_hash = hash_for_log(sender_phone)
+    t_start = _time.monotonic()
 
     # 1. Input processor — text/image/voice/link → unified_text
+    t0 = _time.monotonic()
     unified = await processor.process(payloads, vision, inventory)
+    input_ms = int((_time.monotonic() - t0) * 1000)
     if not unified.strip():
         log("pipeline_skipped", reason="empty_unified_text", phone_hash=phone_hash)
         return
 
-    # 2. Language gate (provider-agnostic — uses classifier_llm)
+    # 2. Load existing session (needed for stage checks + intent gate)
+    session = storage.get(operator.operator_id, sender_phone)
+
+    # 3. OWNER_ACTIVE — skip pipeline entirely (operator is handling directly)
+    if session and session.stage == Stage.OWNER_ACTIVE:
+        log("pipeline_skipped", reason="owner_active", phone_hash=phone_hash)
+        return
+
+    # NOTE: HANDED_OFF does NOT suppress the bot. The bot keeps chatting
+    # normally after a handoff trigger — the customer doesn't know anything
+    # changed. The bot only stops when the operator physically types in the
+    # customer thread (from_me:true → OWNER_ACTIVE). This was a deliberate
+    # design change: holding messages felt impersonal, and customers may
+    # want to keep browsing even after expressing buying intent.
+
+    # 4. Language gate
+    t0 = _time.monotonic()
     lang = await language_mod.classify(unified, classifier_llm)
+    language_ms = int((_time.monotonic() - t0) * 1000)
     if lang in ("LUGANDA", "UNKNOWN"):
         await _send_canned_and_alert(
             sender_phone, unified, lang, operator, messaging, phone_hash
         )
         return
 
-    # 3. Load or create session
-    session = storage.get(operator.operator_id, sender_phone)
+    # 5. Intent gate — only for new/unknown contacts (no session or empty history)
+    intent_ms = 0
+    should_classify_intent = (session is None or not session.history)
+    if should_classify_intent:
+        t0 = _time.monotonic()
+        intent = await intent_mod.classify_intent(unified, classifier_llm)
+        intent_ms = int((_time.monotonic() - t0) * 1000)
+        if intent == "NOT_SALES":
+            log(
+                "intent_gate_silent",
+                phone_hash=phone_hash,
+                operator_id=operator.operator_id,
+                chars=len(unified),
+            )
+            # TODO: operator alert for high-signal non-sales messages
+            # Deferred — needs real usage data to define "important"
+            return  # Silent. No reply. No session update.
+
+    # 6. Create session if new
     if session is None:
         now = datetime.utcnow()
         session = Session(
@@ -87,21 +126,39 @@ async def run(
             created_at=now,
         )
 
-    # 4. Run the conversation engine
+    # 7. Run the conversation engine
+    t0 = _time.monotonic()
     reply_text, products = await conversation.run(
         operator=operator,
         session=session,
         unified_text=unified,
         llm=llm,
         inventory=inventory,
+        messaging=messaging,
         storage=storage,
         max_history_turns=max_history_turns,
         session_expiry_days=session_expiry_days,
     )
+    llm_ms = int((_time.monotonic() - t0) * 1000)
 
-    # 5. Send the reply (text + up to 3 product images)
+    # 8. Send the reply (text + up to 3 product images)
+    t0 = _time.monotonic()
     await response_builder.send_response(
         sender_phone, reply_text, products, operator, messaging
+    )
+    send_ms = int((_time.monotonic() - t0) * 1000)
+
+    total_ms = int((_time.monotonic() - t_start) * 1000)
+    log(
+        "pipeline_timing",
+        phone_hash=phone_hash,
+        operator_id=operator.operator_id,
+        input_ms=input_ms,
+        language_ms=language_ms,
+        intent_ms=intent_ms,
+        llm_ms=llm_ms,
+        send_ms=send_ms,
+        total_ms=total_ms,
     )
 
 

@@ -9,9 +9,9 @@ and personal conversations unchanged.
 
 Customers message the operator's number. The bot handles enquiries, finds
 matching products from a Google Sheet, and alerts the operator when a customer
-is ready to buy. When the operator takes over, they type in a control thread
-and Salelular forwards their reply to the customer from the shop number.
-The customer always sees one number, one continuous conversation — whether
+is ready to buy. The operator then opens the customer's chat in the shop's
+WhatsApp and types directly. The bot detects this and steps aside. The
+customer always sees one number, one continuous conversation — whether
 the bot or the operator is replying.
 
 Full technical reference: SPEC.md
@@ -21,8 +21,8 @@ Read only the section you need. Never load the entire file at once.
 
 ## Current phase
 
-PHASE 4 — Conversation Engine
-Read .claude/prompts/phase4.md before doing anything else.
+PHASE 5 — Handoff and Owner Control
+Read .claude/prompts/phase5.md before doing anything else.
 Update this line when advancing phases.
 
 ---
@@ -213,11 +213,13 @@ class StorageAdapter(ABC):
     def get(self, operator_id: str, phone: str) -> Session | None
     def set(self, operator_id: str, phone: str, session: Session) -> None
     def delete(self, operator_id: str, phone: str) -> None
+    def get_by_stage(self, operator_id: str, stage: str) -> list[Session]
 
 class OperatorAdapter(ABC):
     def get_by_channel_id(self, channel_id: str) -> Operator | None
     def get_all_active(self) -> list[Operator]
     def update_status(self, operator_id: str, status: OperatorStatus) -> None
+    def save(self, operator: Operator) -> None
 
 ---
 

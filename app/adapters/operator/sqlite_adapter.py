@@ -59,7 +59,12 @@ class SqliteOperatorAdapter(OperatorAdapter):
         d = {}
         for k, v in o.__dict__.items():
             if k in ("whapi_channel_token", "whapi_webhook_secret"):
-                d[k] = encrypt(v, self._key)
+                # These fields are stored as ciphertext in the Operator
+                # dataclass (_deserialise does not decrypt). On a load→save
+                # cycle, pass through as-is to avoid double-encryption.
+                # For NEW operators (create_test_operator), the caller
+                # passes plaintext — use encrypt_if_plaintext to handle both.
+                d[k] = self._encrypt_if_plaintext(v)
             elif isinstance(v, OperatorStatus):
                 d[k] = v.value
             elif isinstance(v, datetime):
@@ -67,6 +72,19 @@ class SqliteOperatorAdapter(OperatorAdapter):
             else:
                 d[k] = v
         return d
+
+    def _encrypt_if_plaintext(self, value: str) -> str:
+        """Encrypt only if the value is plaintext (not already ciphertext).
+
+        Ciphertext from our encrypt() is always valid base64 and decrypts
+        successfully. If decrypt succeeds, the value is already encrypted
+        — return it as-is. If decrypt fails, it's plaintext — encrypt it.
+        """
+        try:
+            decrypt(value, self._key)
+            return value  # already ciphertext
+        except Exception:
+            return encrypt(value, self._key)  # plaintext → encrypt
 
     def _deserialise(self, d: dict) -> Operator:
         # Sensitive fields (whapi_channel_token, whapi_webhook_secret) remain
@@ -76,4 +94,7 @@ class SqliteOperatorAdapter(OperatorAdapter):
         d["status"] = OperatorStatus(d["status"])
         if d.get("created_at") is not None:
             d["created_at"] = datetime.fromisoformat(d["created_at"])
+        # Backward compat: existing DB rows may not have these fields
+        d.setdefault("excluded_phones", [])
+        d.setdefault("included_phones", [])
         return Operator(**d)

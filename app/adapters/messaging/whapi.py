@@ -9,6 +9,7 @@ from app.models.operator import Operator
 from app.utils.crypto import decrypt
 from app.utils.log import log
 from app.utils.phone import hash_for_log, to_whapi
+from app.utils.sent_tracker import sent_tracker
 
 WHAPI_BASE = "https://gate.whapi.cloud"
 RETRY_BACKOFF_S = [1, 2]  # Attempt 1 immediate, 2 after 1s, 3 after 2s
@@ -22,10 +23,11 @@ class WhapiMessagingAdapter(MessagingAdapter):
     async def send_text(self, phone: str, text: str, operator: Operator) -> None:
         token = decrypt(operator.whapi_channel_token, self._key)
         url = f"{WHAPI_BASE}/messages/text?token={token}"
+        typing_time = 2 if len(text) > 200 else 1
         body = {
             "to": f"{to_whapi(phone)}@s.whatsapp.net",
             "body": text,
-            "typing_time": 2,
+            "typing_time": typing_time,
         }
         await self._send_with_retry(
             url=url, json=body, operator=operator, phone=phone, kind="text"
@@ -70,6 +72,17 @@ class WhapiMessagingAdapter(MessagingAdapter):
                 try:
                     resp = await client.post(url, json=json)
                     if resp.status_code < 400:
+                        # Capture the message ID so we can distinguish
+                        # bot-sent echoes from operator typing in receiver.
+                        try:
+                            resp_data = resp.json()
+                            # Whapi response: {"sent": true, "message": {"id": "..."}}
+                            msg_obj = resp_data.get("message") or {}
+                            sent_id = msg_obj.get("id", "")
+                            if sent_id:
+                                sent_tracker.register(sent_id)
+                        except Exception:
+                            pass  # See TECH DEBT in sent_tracker.py
                         log(
                             "message_sent",
                             operator_id=operator.operator_id,
@@ -80,11 +93,14 @@ class WhapiMessagingAdapter(MessagingAdapter):
                         return
                     last_status = resp.status_code
                     last_error = f"http_{resp.status_code}"
-                    # Capture body for debugging non-200 responses
                     try:
                         last_error = f"http_{resp.status_code}:{resp.text[:200]}"
                     except Exception:
                         pass
+                    # Don't retry 400 errors — the request is malformed
+                    # (e.g. broken image URL). Retrying won't help.
+                    if resp.status_code == 400:
+                        break
                 except (httpx.RequestError, httpx.TimeoutException) as e:
                     last_error = type(e).__name__
 

@@ -107,23 +107,13 @@ thread is for ALERTS and CONTROL COMMANDS only.
         persist(session)
         Log owner_typed_in_customer_thread
 
-### 3. Holding message logic (in pipeline/runner.py)
-  When session.stage == HANDED_OFF and customer sends a new message:
-    Check session.last_holding_sent.
-    If None or (now() - last_holding_sent) > 3600 seconds (1 hour):
-      Send: "The team has been notified and will be with you shortly!"
-      Set session.last_holding_sent = now().
-      Persist session.
-    Else: do nothing.
+### 3. Bot behaviour during HANDED_OFF (in pipeline/runner.py)
+  The bot continues responding normally while stage = HANDED_OFF.
+  No holding message. No pipeline skip. No 24h revert needed.
+  The bot only stops when the operator physically types in the
+  customer thread (from_me: true → OWNER_ACTIVE).
 
-### 4. 24-hour inactivity revert (in pipeline/runner.py)
-  When session.stage == HANDED_OFF:
-    If (now() - session.handed_off_at) > 86400 seconds (24 hours):
-      Set session.stage = CONSIDERING.
-      Bot responds normally.
-      Prepend to bot message: "I'm still here if you'd like to keep browsing!"
-
-### 5. Background health monitor (app/main.py extension)
+### 4. Background health monitor (app/main.py extension)
   asyncio task, runs every WHAPI_HEALTH_CHECK_INTERVAL_S seconds.
   For each active operator:
     GET https://gate.whapi.cloud/health?token={decrypted_channel_token}
@@ -156,7 +146,7 @@ Phase 5 passes when:
   5. Operator types "resume {customer_phone}" in control thread →
      customer stage becomes CONSIDERING; bot resumes on next message
   6. Operator types "handled {customer_phone}" → stage becomes OWNER_ACTIVE
-  7. Customer messages while HANDED_OFF → holding message sent once per hour max
+  7. Customer messages while HANDED_OFF → bot continues responding normally
   8. Two customers in HANDED_OFF concurrently → `resume` without arg replies
      with disambiguation prompt; `resume {phone}` targets the right one
   9. Whapi health endpoint checked — disconnect alert fires if session drops
