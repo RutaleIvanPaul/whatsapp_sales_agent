@@ -74,7 +74,9 @@ def _serialise_session(s: Session) -> dict:
 
 def _deserialise_session(d: dict) -> Session:
     d["stage"] = Stage(d["stage"])
-    for field in ("handed_off_at", "last_holding_sent", "last_active", "created_at"):
+    # Backward compat: silently drop removed fields from existing DB rows
+    d.pop("last_holding_sent", None)
+    for field in ("handed_off_at", "last_active", "created_at"):
         if d.get(field) is not None:
             d[field] = datetime.fromisoformat(d[field])
     return Session(**d)
