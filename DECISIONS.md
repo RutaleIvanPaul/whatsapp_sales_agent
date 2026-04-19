@@ -432,8 +432,8 @@ until then.
 **What was removed:**
 - Holding message logic in pipeline/runner.py
 - 24-hour inactivity revert logic
-- last_holding_sent field is unused (kept in Session model for now,
-  can be removed in a future cleanup)
+- last_holding_sent field removed from Session model and SQLite
+  adapter (_deserialise drops it from existing DB rows via d.pop)
 
 **What remains:**
 - OWNER_ACTIVE is the sole bot-suppression trigger

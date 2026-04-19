@@ -322,7 +322,6 @@ SESSION (app/models/session.py):
       shown_product_ids: list[str]      # never show these again unprompted
       stage: Stage
       handed_off_at: datetime | None
-      last_holding_sent: datetime | None
       last_active: datetime
       created_at: datetime
 

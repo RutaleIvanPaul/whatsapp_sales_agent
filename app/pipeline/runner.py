@@ -121,7 +121,6 @@ async def run(
             shown_product_ids=[],
             stage=Stage.EXPLORING,
             handed_off_at=None,
-            last_holding_sent=None,
             last_active=now,
             created_at=now,
         )

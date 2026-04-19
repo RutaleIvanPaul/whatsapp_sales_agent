@@ -143,7 +143,6 @@ def _make_session(
         shown_product_ids=[],
         stage=stage,
         handed_off_at=None,
-        last_holding_sent=None,
         last_active=now,
         created_at=now,
     )

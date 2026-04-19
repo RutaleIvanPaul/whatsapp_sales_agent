@@ -110,7 +110,6 @@ def main():
             shown_product_ids=["prod-1"],
             stage=Stage.EXPLORING,
             handed_off_at=None,
-            last_holding_sent=None,
             last_active=now,
             created_at=now,
         )
