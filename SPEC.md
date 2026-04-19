@@ -859,24 +859,20 @@ OWNER COMMANDS (in owner_action_handler.py):
   Unrecognised text in the control thread:
     Reply with available commands. Do NOT forward anywhere.
 
-HOLDING MESSAGE:
-  While session.stage = HANDED_OFF and customer sends another message:
-    Check session.last_holding_sent.
-    If None or > 1 hour ago:
-      Send: "Still here! Just sorting a few things out for you."
-      Set session.last_holding_sent = now().
-    Else: do nothing (do not spam the customer).
+BOT BEHAVIOUR DURING HANDED_OFF:
+  The bot continues responding normally while stage = HANDED_OFF.
+  The customer does not know a handoff has happened. They can keep
+  browsing, asking questions, or even trigger another handoff.
 
-24-HOUR INACTIVITY REVERT:
-  If session.stage = HANDED_OFF
-  AND (now() - session.handed_off_at) > 24 hours
-  AND customer sends a new message:
-    Set session.stage = CONSIDERING.
-    Bot responds normally.
-    Bot message prepends "Hey, good to hear from you again!" to the
-    customer's text before passing to the conversation engine, so the
-    LLM naturally picks up the conversation.
-    (This only fires if customer messages — bot never initiates.)
+  The bot only stops when the operator physically types in the
+  customer thread (from_me: true → OWNER_ACTIVE). This is the sole
+  bot-suppression trigger.
+
+  Design rationale: holding messages ("still here, sorting things out")
+  felt impersonal and broke the illusion that the customer is talking
+  to a human. Customers may want to keep browsing even after expressing
+  buying intent. The operator takes over when they're ready — the bot
+  fills the gap naturally until then.
 
 PASSIVE INTERRUPTION DETECTION (Mode 2 — the takeover path):
   In webhook receiver, from_me: true in a customer chat:

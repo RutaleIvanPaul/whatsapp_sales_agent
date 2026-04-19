@@ -116,8 +116,11 @@ async def receive(request: Request) -> Response:
             if msg.get("from_me"):
                 # Check if this is a bot-sent echo (our own outbound message
                 # echoing back from Whapi) or a genuine operator action.
+                # Two signals: sent_tracker ID match OR Whapi source field.
                 if sent_tracker.is_bot_sent(msg_id):
                     continue  # Bot echo — ignore silently
+                if msg.get("source") == "api":
+                    continue  # Bot echo — Whapi marks API-sent messages
                 # Genuine operator action — passive interruption or from
                 # operator's phone. Route to owner_action_handler.
                 asyncio.create_task(

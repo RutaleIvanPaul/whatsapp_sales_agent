@@ -408,3 +408,54 @@ delimiters." The language classifier was missing them (pre-existing tech
 debt from Phase 4). Fixed alongside the intent gate implementation.
 
 **Date:** Phase 5 (April 2026)
+
+---
+
+## 18. Bot stays active during HANDED_OFF (no holding message)
+
+**Decision:** When a handoff is triggered, the bot continues responding
+normally. The session stage is HANDED_OFF but the pipeline does NOT skip
+or send a holding message. The bot only stops when the operator
+physically types in the customer thread (from_me: true → OWNER_ACTIVE).
+
+**Previous design:** HANDED_OFF suppressed the bot and sent a holding
+message ("Still here! Just sorting a few things out for you.") once per
+hour, with a 24-hour inactivity revert back to CONSIDERING.
+
+**Why it was changed:** During live testing, the holding message felt
+impersonal and broke the illusion of talking to a human. Customers may
+want to keep browsing even after expressing buying intent — they don't
+know a handoff happened, so they expect the conversation to continue.
+The operator takes over when ready; the bot fills the gap naturally
+until then.
+
+**What was removed:**
+- Holding message logic in pipeline/runner.py
+- 24-hour inactivity revert logic
+- last_holding_sent field is unused (kept in Session model for now,
+  can be removed in a future cleanup)
+
+**What remains:**
+- OWNER_ACTIVE is the sole bot-suppression trigger
+- The operator alerts still fire on handoff
+- resume/handled commands still work
+
+**Date:** Phase 5 (April 2026)
+
+---
+
+## 19. Whapi source field as secondary echo filter
+
+**Decision:** In addition to sent_tracker ID matching, the receiver
+also checks `msg.source == "api"` to identify bot-sent echoes. This
+is a secondary signal that does not depend on capturing the message
+ID from the Whapi send response.
+
+**Why:** During live testing, some image sends failed to return a
+parseable message ID (network timing, response format variations).
+The sent_tracker missed these IDs, and the echoes were treated as
+operator typing — flipping the session to OWNER_ACTIVE and silencing
+the bot. The `source: "api"` field is set by Whapi on all API-sent
+messages and is always present in the webhook payload.
+
+**Date:** Phase 5 (April 2026)

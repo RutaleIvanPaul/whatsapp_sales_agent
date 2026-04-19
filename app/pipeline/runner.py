@@ -63,42 +63,18 @@ async def run(
     # 2. Load existing session (needed for stage checks + intent gate)
     session = storage.get(operator.operator_id, sender_phone)
 
-    # 3. OWNER_ACTIVE — skip pipeline entirely
+    # 3. OWNER_ACTIVE — skip pipeline entirely (operator is handling directly)
     if session and session.stage == Stage.OWNER_ACTIVE:
         log("pipeline_skipped", reason="owner_active", phone_hash=phone_hash)
         return
 
-    # 4. HANDED_OFF — holding message or 24h revert
-    if session and session.stage == Stage.HANDED_OFF:
-        if session.handed_off_at:
-            handed_off_s = (datetime.utcnow() - session.handed_off_at).total_seconds()
-            if handed_off_s > 86400:
-                # 24-hour inactivity revert
-                session.stage = Stage.CONSIDERING
-                session.last_active = datetime.utcnow()
-                storage.set(operator.operator_id, sender_phone, session)
-                # Prepend warm continuation — fall through to conversation engine
-                unified = "Hey, good to hear from you again! " + unified
-                log("handoff_reverted_24h", phone_hash=phone_hash,
-                    operator_id=operator.operator_id)
-            else:
-                # Holding message (once per hour)
-                now = datetime.utcnow()
-                should_send = (
-                    session.last_holding_sent is None
-                    or (now - session.last_holding_sent).total_seconds() > 3600
-                )
-                if should_send:
-                    await messaging.send_text(
-                        sender_phone,
-                        "Still here! Just sorting a few things out for you.",
-                        operator,
-                    )
-                    session.last_holding_sent = now
-                    storage.set(operator.operator_id, sender_phone, session)
-                return  # Do NOT run conversation engine
+    # NOTE: HANDED_OFF does NOT suppress the bot. The bot keeps chatting
+    # normally after a handoff trigger — the customer doesn't know anything
+    # changed. The bot only stops when the operator physically types in the
+    # customer thread (from_me:true → OWNER_ACTIVE). This was a deliberate
+    # design change: holding messages felt impersonal, and customers may
+    # want to keep browsing even after expressing buying intent.
 
-    # 5. Language gate
     lang = await language_mod.classify(unified, classifier_llm)
     if lang in ("LUGANDA", "UNKNOWN"):
         await _send_canned_and_alert(
@@ -106,7 +82,7 @@ async def run(
         )
         return
 
-    # 6. Intent gate — only for new/unknown contacts (no session or empty history)
+    # 5. Intent gate — only for new/unknown contacts (no session or empty history)
     should_classify_intent = (session is None or not session.history)
     if should_classify_intent:
         intent = await intent_mod.classify_intent(unified, classifier_llm)
@@ -121,7 +97,7 @@ async def run(
             # Deferred — needs real usage data to define "important"
             return  # Silent. No reply. No session update.
 
-    # 7. Create session if new
+    # 6. Create session if new
     if session is None:
         now = datetime.utcnow()
         session = Session(
@@ -140,7 +116,7 @@ async def run(
             created_at=now,
         )
 
-    # 8. Run the conversation engine
+    # 7. Run the conversation engine
     reply_text, products = await conversation.run(
         operator=operator,
         session=session,
