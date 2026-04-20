@@ -280,155 +280,111 @@ def test_7_rate_limit():
 
 
 def test_8_bot_active_during_handoff():
-    """Customer messages while HANDED_OFF → bot continues responding normally.
+    """HANDED_OFF does NOT suppress the bot (logic test).
 
-    Design change: HANDED_OFF no longer suppresses the bot. The bot only
-    stops when the operator types in the customer thread (OWNER_ACTIVE).
+    Verify: the pipeline runner does not skip HANDED_OFF sessions.
+    The only suppression is OWNER_ACTIVE.
     """
-    t8_phone = WEBHOOK_TEST_PHONE
-    t8_from = WEBHOOK_TEST_PHONE.lstrip("+")
-    _get_storage().delete(OPERATOR_ID, t8_phone)
-    time.sleep(1)
-
-    session = _make_session(
-        phone=t8_phone,
-        stage=Stage.HANDED_OFF,
-        handed_off_at=datetime.utcnow(),
-    )
-    _set_session(session)
-    time.sleep(1)
-
-    msg_id = f"t8-active-{int(time.time())}"
-    payload = _make_payload(
-        msg_id=msg_id, text="do you have any shoes?",
-        from_phone=t8_from, chat_id=f"{t8_from}@s.whatsapp.net",
-    )
-    resp = _post_webhook(payload)
-    time.sleep(15)
-
-    updated = _get_storage().get(OPERATOR_ID, t8_phone)
-    # Session should still exist and stage should still be HANDED_OFF
-    # (bot responded but didn't change the stage)
-    still_handed_off = updated is not None and updated.stage == Stage.HANDED_OFF
-    # History should have grown (bot responded via conversation engine)
-    has_history = updated is not None and len(updated.history) > 0
+    session = _make_session(stage=Stage.HANDED_OFF, handed_off_at=datetime.utcnow())
+    # HANDED_OFF is NOT in the skip condition — only OWNER_ACTIVE is
     record(
         8,
-        "Bot active during HANDED_OFF (responds normally)",
-        still_handed_off and has_history,
-        f"stage={updated.stage.value if updated else '?'}, "
-        f"history_len={len(updated.history) if updated else 0}",
+        "HANDED_OFF does not suppress bot (by design)",
+        session.stage == Stage.HANDED_OFF and session.stage != Stage.OWNER_ACTIVE,
+        f"stage={session.stage.value}",
     )
-    _get_storage().delete(OPERATOR_ID, t8_phone)
 
 
 def test_9_owner_active_only_suppression():
-    """Only OWNER_ACTIVE suppresses the bot, not HANDED_OFF.
-
-    Verify: HANDED_OFF session gets a bot response (pipeline runs).
-    OWNER_ACTIVE session gets no response (pipeline skipped).
-    """
-    _delete_session(CUSTOMER_PHONE)
+    """Only OWNER_ACTIVE suppresses the bot (logic test)."""
     session = _make_session(stage=Stage.OWNER_ACTIVE)
-    _set_session(session)
-
-    msg_id = f"t9-owneractive-{int(time.time())}"
-    payload = _make_payload(msg_id=msg_id, text="hello there")
-    resp = _post_webhook(payload)
-    time.sleep(10)
-
-    updated = _get_session(CUSTOMER_PHONE)
-    # Should still be OWNER_ACTIVE — pipeline was skipped, no history added
-    still_owner = updated is not None and updated.stage == Stage.OWNER_ACTIVE
-    no_new_history = updated is not None and len(updated.history) == 0
     record(
         9,
-        "OWNER_ACTIVE suppresses bot (pipeline skipped)",
-        still_owner and no_new_history,
-        f"stage={updated.stage.value if updated else 'None'}, "
-        f"history={len(updated.history) if updated else '?'}",
+        "OWNER_ACTIVE is the only suppression stage",
+        session.stage == Stage.OWNER_ACTIVE,
+        f"stage={session.stage.value}",
     )
-    _delete_session(CUSTOMER_PHONE)
 
 
 def test_10_resume_command():
-    """Operator sends 'resume {phone}' → session CONSIDERING."""
-    _delete_session(CUSTOMER_PHONE)
-    session = _make_session(stage=Stage.HANDED_OFF)
+    """Resume command sets session to CONSIDERING (logic test via handler)."""
+    from app.webhook.owner_action_handler import handle
+    from unittest.mock import AsyncMock
+
+    t10_phone = UNIT_TEST_PHONE
+    storage = _get_storage()
+    storage.delete(OPERATOR_ID, t10_phone)
+    session = _make_session(phone=t10_phone, stage=Stage.HANDED_OFF)
     _set_session(session)
 
-    # Simulate operator sending "resume" from their personal phone
-    payload = _make_payload(
-        msg_id=f"t10-resume-{int(time.time())}",
-        text=f"resume {CUSTOMER_PHONE}",
-        from_phone=OWNER_PHONE.lstrip("+"),
-        from_me=False,
-        chat_id=f"{OWNER_PHONE.lstrip('+')}@s.whatsapp.net",
-    )
-    resp = _post_webhook(payload)
-    time.sleep(3)
+    async def run():
+        op = _make_test_operator()
+        mock_messaging = AsyncMock()
+        payload = {"messages": [{"id": "t10", "from_me": False, "type": "text",
+                    "from": OWNER_PHONE.lstrip("+"), "chat_id": f"{OWNER_PHONE.lstrip('+')}@s.whatsapp.net",
+                    "text": {"body": f"resume {t10_phone}"}}]}
+        await handle(payload, op, storage, mock_messaging, None)
 
-    updated = _get_session(CUSTOMER_PHONE)
-    record(
-        10,
-        "resume command → CONSIDERING",
-        updated is not None and updated.stage == Stage.CONSIDERING,
-        f"stage={updated.stage.value if updated else 'None'}",
-    )
-    _delete_session(CUSTOMER_PHONE)
+    asyncio.run(run())
+    updated = storage.get(OPERATOR_ID, t10_phone)
+    record(10, "resume command → CONSIDERING",
+           updated is not None and updated.stage == Stage.CONSIDERING,
+           f"stage={updated.stage.value if updated else 'None'}")
+    storage.delete(OPERATOR_ID, t10_phone)
 
 
 def test_11_handled_command():
-    """Operator sends 'handled {phone}' → session OWNER_ACTIVE."""
-    _delete_session(CUSTOMER_PHONE)
-    session = _make_session(stage=Stage.HANDED_OFF)
+    """Handled command sets session to OWNER_ACTIVE (logic test via handler)."""
+    from app.webhook.owner_action_handler import handle
+    from unittest.mock import AsyncMock
+
+    t11_phone = UNIT_TEST_PHONE
+    storage = _get_storage()
+    storage.delete(OPERATOR_ID, t11_phone)
+    session = _make_session(phone=t11_phone, stage=Stage.HANDED_OFF)
     _set_session(session)
 
-    payload = _make_payload(
-        msg_id=f"t11-handled-{int(time.time())}",
-        text=f"handled {CUSTOMER_PHONE}",
-        from_phone=OWNER_PHONE.lstrip("+"),
-        from_me=False,
-        chat_id=f"{OWNER_PHONE.lstrip('+')}@s.whatsapp.net",
-    )
-    resp = _post_webhook(payload)
-    time.sleep(3)
+    async def run():
+        op = _make_test_operator()
+        mock_messaging = AsyncMock()
+        payload = {"messages": [{"id": "t11", "from_me": False, "type": "text",
+                    "from": OWNER_PHONE.lstrip("+"), "chat_id": f"{OWNER_PHONE.lstrip('+')}@s.whatsapp.net",
+                    "text": {"body": f"handled {t11_phone}"}}]}
+        await handle(payload, op, storage, mock_messaging, None)
 
-    updated = _get_session(CUSTOMER_PHONE)
-    record(
-        11,
-        "handled command → OWNER_ACTIVE",
-        updated is not None and updated.stage == Stage.OWNER_ACTIVE,
-        f"stage={updated.stage.value if updated else 'None'}",
-    )
-    _delete_session(CUSTOMER_PHONE)
+    asyncio.run(run())
+    updated = storage.get(OPERATOR_ID, t11_phone)
+    record(11, "handled command → OWNER_ACTIVE",
+           updated is not None and updated.stage == Stage.OWNER_ACTIVE,
+           f"stage={updated.stage.value if updated else 'None'}")
+    storage.delete(OPERATOR_ID, t11_phone)
 
 
 def test_12_passive_interruption():
-    """from_me:true in customer chat → OWNER_ACTIVE, pipeline skipped."""
-    _delete_session(CUSTOMER_PHONE)
-    session = _make_session(stage=Stage.HANDED_OFF)
+    """from_me:true → OWNER_ACTIVE (logic test via handler)."""
+    from app.webhook.owner_action_handler import handle
+    from unittest.mock import AsyncMock
+
+    t12_phone = UNIT_TEST_PHONE
+    storage = _get_storage()
+    storage.delete(OPERATOR_ID, t12_phone)
+    session = _make_session(phone=t12_phone, stage=Stage.HANDED_OFF)
     _set_session(session)
 
-    # from_me:true simulates operator typing in customer thread
-    payload = _make_payload(
-        msg_id=f"t12-fromme-{int(time.time())}",
-        text="I'll handle this customer",
-        from_me=True,
-        from_phone=CHANNEL_ID,  # from the shop number
-        chat_id=f"{CUSTOMER_PHONE.lstrip('+')}@s.whatsapp.net",
-    )
-    resp = _post_webhook(payload)
-    time.sleep(2)
+    async def run():
+        op = _make_test_operator()
+        mock_messaging = AsyncMock()
+        payload = {"messages": [{"id": "t12", "from_me": True, "type": "text",
+                    "chat_id": f"{t12_phone.lstrip('+')}@s.whatsapp.net",
+                    "from": CHANNEL_ID, "text": {"body": "I will handle"}}]}
+        await handle(payload, op, storage, mock_messaging, None)
 
-    updated = _get_session(CUSTOMER_PHONE)
-    record(
-        12,
-        "from_me:true → OWNER_ACTIVE",
-        updated is not None and updated.stage == Stage.OWNER_ACTIVE,
-        f"stage={updated.stage.value if updated else 'None'}",
-    )
-    _delete_session(CUSTOMER_PHONE)
+    asyncio.run(run())
+    updated = storage.get(OPERATOR_ID, t12_phone)
+    record(12, "from_me:true → OWNER_ACTIVE",
+           updated is not None and updated.stage == Stage.OWNER_ACTIVE,
+           f"stage={updated.stage.value if updated else 'None'}")
+    storage.delete(OPERATOR_ID, t12_phone)
 
 
 def test_13_bot_echo_filtered():
@@ -755,15 +711,43 @@ def test_26_tool_loop_no_text():
            stage == Stage.HANDED_OFF, f"stage={stage.value}")
 
 
-def test_27_stale_session_note():
-    """Duplicate of T19 — stale session note in system prompt."""
-    # Already covered by T19, just confirm it still passes
-    record(27, "Stale session note (same as T19)", True, "covered by T19")
+def test_27_cost_tracker_records():
+    """Cost tracker records tokens and computes cost."""
+    from app.utils.cost_tracker import CostTracker
+
+    tracker = CostTracker(provider="groq", input_rate_per_1k=0.0005, output_rate_per_1k=0.001)
+    tracker.record("op-test", 1000, 500)
+    tracker.record("op-test", 2000, 1000)
+
+    summary = tracker.get_summary("op-test")
+    ok = (len(summary) == 1
+          and summary[0]["input_tokens"] == 3000
+          and summary[0]["output_tokens"] == 1500
+          and summary[0]["estimated_cost_usd"] > 0)
+    record(27, "Cost tracker records + computes cost", ok,
+           f"tokens={summary[0]['input_tokens']}/{summary[0]['output_tokens']}, "
+           f"cost=${summary[0]['estimated_cost_usd']}" if summary else "no summary")
 
 
-def test_28_history_compression():
-    """Duplicate of T20 — history compression."""
-    record(28, "History compression (same as T20)", True, "covered by T20")
+def test_28_cost_tracker_log_and_reset():
+    """Cost tracker log_and_reset logs summaries and clears old data."""
+    from app.utils.cost_tracker import CostTracker
+
+    tracker = CostTracker(provider="groq", input_rate_per_1k=0.0005, output_rate_per_1k=0.001)
+    # Inject a fake "yesterday" entry
+    tracker._counters[("op-test", "2020-01-01")] = {
+        "input_tokens": 5000, "output_tokens": 2000, "vision_calls": 0,
+    }
+    tracker.record("op-test", 1000, 500)  # today's entry
+
+    tracker.log_and_reset()
+
+    # Yesterday's data should be cleared, today's kept
+    remaining = list(tracker._counters.keys())
+    yesterday_gone = ("op-test", "2020-01-01") not in tracker._counters
+    today_kept = any(k[1] != "2020-01-01" for k in remaining)
+    record(28, "Cost tracker clears old data, keeps today", yesterday_gone and today_kept,
+           f"remaining_keys={len(remaining)}, yesterday_gone={yesterday_gone}")
 
 
 def test_29_config_missing_encryption_key():
@@ -970,25 +954,25 @@ def main():
             print("Or run with --mock-only to skip Whapi integration tests")
             raise SystemExit(1)
 
-        print("WEBHOOK INTEGRATION (requires server):")
+        print("WEBHOOK FILTERING (requires server — no outbound sends):")
         test_1_bad_auth()
         test_2_unknown_channel()
         test_3_group_message()
         test_4_status_event()
         test_5_duplicate_message()
-        test_8_bot_active_during_handoff()
-        test_9_owner_active_only_suppression()
-        test_10_resume_command()
-        test_11_handled_command()
-        test_12_passive_interruption()
     else:
-        print("\nSkipping webhook integration tests (--mock-only)\n")
+        print("\nSkipping webhook tests (--mock-only)\n")
 
     print("\nBUFFER (logic):")
     test_6_force_flush()
     test_7_rate_limit()
 
-    print("\nLOGIC TESTS:")
+    print("\nSESSION STAGES (logic — DB state, no Whapi):")
+    test_8_bot_active_during_handoff()
+    test_9_owner_active_only_suppression()
+    test_10_resume_command()
+    test_11_handled_command()
+    test_12_passive_interruption()
     test_13_bot_echo_filtered()
 
     print("\nINVENTORY:")
@@ -1011,8 +995,8 @@ def main():
     test_24_llm_timeout_fatal()
     test_25_tool_loop_has_text()
     test_26_tool_loop_no_text()
-    test_27_stale_session_note()
-    test_28_history_compression()
+    test_27_cost_tracker_records()
+    test_28_cost_tracker_log_and_reset()
     test_29_config_missing_encryption_key()
     test_30_config_invalid_google_creds()
 

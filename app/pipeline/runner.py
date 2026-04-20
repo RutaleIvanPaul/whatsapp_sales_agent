@@ -16,7 +16,7 @@ from app.models.operator import Operator
 from app.models.session import Session, Stage
 from app.pipeline import response_builder
 from app.utils.log import log
-from app.utils.phone import from_whapi, hash_for_log, to_whapi
+from app.utils.phone import from_whapi, hash_for_log
 import time as _time
 
 MAX_ALERT_CHARS = 200
@@ -99,9 +99,10 @@ async def run(
             _daily_alerted.add(cap_key)
             customer_name = session.name if session else "a customer"
             alert = (
-                f"Hi {operator.owner_name}, {customer_name} has been very "
-                f"active today ({count} messages). Responses are paused "
-                f"until tomorrow to avoid overuse."
+                f"Hi {operator.owner_name}, {customer_name} has sent "
+                f"{count} messages today. I've stepped back from this "
+                f"conversation for now — you may want to check in with "
+                f"them directly."
             )
             asyncio.create_task(
                 messaging.send_text(operator.owner_personal_phone, alert, operator)
@@ -219,10 +220,9 @@ async def _send_canned_and_alert(
     alert = (
         f"Hi {operator.owner_name}, a customer sent a message that "
         f"appears to be in {detected_language.lower()}.\n\n"
-        f"Your canned response was sent automatically. Here's what "
+        f"I replied with your standard response. Here's what "
         f"they said:\n\"{snippet}\"\n\n"
-        f"Tap this link to reply directly: "
-        f"https://wa.me/{to_whapi(sender_phone)}"
+        f"To reply directly, find them in your shop's WhatsApp."
     )
     try:
         await messaging.send_text(operator.owner_personal_phone, alert, operator)

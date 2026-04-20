@@ -115,28 +115,26 @@ class WhapiMessagingAdapter(MessagingAdapter):
         # All attempts failed — alert operator with human-friendly message
         if kind == "image" and "media link is not available" in (last_error or ""):
             alert = (
-                f"Hi {operator.owner_name}, Salelular couldn't send a product "
+                f"Hi {operator.owner_name}, I couldn't send a product "
                 f"image to a customer.\n\n"
-                f"The image URL in your product sheet appears to be broken or "
-                f"expired. {context}\n\n"
+                f"The image link in your product sheet seems to be broken. "
+                f"{context}\n\n"
                 f"What to do: Open your Google Sheet, find the product, and "
-                f"replace the image_url with a fresh public link."
+                f"replace the image link with a fresh one."
             )
         elif kind == "image":
             alert = (
-                f"Hi {operator.owner_name}, Salelular couldn't send a product "
-                f"image to a customer after 3 tries. {context}\n\n"
-                f"This is usually a temporary network issue. If it keeps "
-                f"happening, check that the image URL in your product sheet "
-                f"is still accessible."
+                f"Hi {operator.owner_name}, I couldn't send a product "
+                f"image to a customer. {context}\n\n"
+                f"This might be a temporary issue. If it keeps happening, "
+                f"check that the image link in your product sheet still works."
             )
         else:
             alert = (
-                f"Hi {operator.owner_name}, Salelular couldn't deliver a "
-                f"message to a customer after 3 tries.\n\n"
-                f"This is usually a temporary network issue. The customer's "
-                f"message was received but the reply didn't go through. "
-                f"They may try again."
+                f"Hi {operator.owner_name}, I couldn't get a reply through "
+                f"to a customer just now.\n\n"
+                f"This is usually temporary. Their message was received "
+                f"but my reply didn't go through — they may try again."
             )
 
         await self._send_alert_noretry(operator=operator, message=alert)
