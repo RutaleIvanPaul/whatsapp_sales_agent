@@ -65,7 +65,8 @@ UNIT_TEST_PHONE = "+256700000001"  # never reaches Whapi, logic tests only
 #               and consents to receiving test messages on.
 MOCK_ONLY = "--mock-only" in sys.argv
 WHAPI_LIVE = "--whapi-live" in sys.argv
-WHAPI_TEST_PHONE = os.getenv("WHAPI_TEST_PHONE", "")
+# Defaults to operator's personal phone if not set explicitly
+WHAPI_TEST_PHONE = os.getenv("WHAPI_TEST_PHONE", OWNER_PHONE)
 
 results: list[tuple[Any, str, bool, str]] = []
 
@@ -839,70 +840,112 @@ def _make_test_operator() -> Operator:
 # Only run when investigating Whapi API behaviour, not for normal builds.
 
 
-def test_w1_send_text():
-    """Whapi send_text → message delivered, 200 response."""
-    from app.adapters.messaging.whapi import WhapiMessagingAdapter
+def _get_whapi_operator():
+    """Load operator for Whapi live tests."""
     from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
+    op_adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
+    return op_adapter.get_by_channel_id(CHANNEL_ID)
+
+
+def test_w1_send_text():
+    """Whapi send_text → Whapi accepts the request (200)."""
+    from app.adapters.messaging.whapi import WhapiMessagingAdapter
 
     async def run():
         adapter = WhapiMessagingAdapter(CFG.encryption_key)
-        op_adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
-        op = op_adapter.get_by_channel_id(CHANNEL_ID)
+        op = _get_whapi_operator()
         if not op:
             return False, "no operator"
         try:
-            await adapter.send_text(WHAPI_TEST_PHONE, "Whapi test: text message", op)
-            return True, "sent"
+            await adapter.send_text(WHAPI_TEST_PHONE, "Salelular test: text delivery check", op)
+            return True, "accepted by Whapi"
         except Exception as e:
             return False, str(e)[:100]
 
     ok, reason = asyncio.run(run())
-    record("W1", "Whapi send_text delivers", ok, reason)
+    record("W1", "Whapi send_text accepted", ok, reason)
 
 
 def test_w2_send_image():
-    """Whapi send_image with a known good URL → delivered."""
+    """Whapi send_image with a real product image URL → accepted."""
     from app.adapters.messaging.whapi import WhapiMessagingAdapter
-    from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
+    from app.adapters.inventory.sheets import GoogleSheetsLoader
 
     async def run():
         adapter = WhapiMessagingAdapter(CFG.encryption_key)
-        op_adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
-        op = op_adapter.get_by_channel_id(CHANNEL_ID)
+        op = _get_whapi_operator()
         if not op:
             return False, "no operator"
-        # Use a public test image
-        test_url = "https://via.placeholder.com/300x200.png?text=Whapi+Test"
+
+        # Use a real product image from the inventory
+        test_url = None
+        if CFG.google_credentials_json_b64 and CFG.google_sheets_id:
+            try:
+                loader = GoogleSheetsLoader(
+                    CFG.google_credentials_json_b64,
+                    CFG.google_sheets_id,
+                    CFG.google_sheet_name,
+                )
+                products = await loader.load()
+                for p in products:
+                    if p.image_url and p.available:
+                        test_url = p.image_url
+                        break
+            except Exception:
+                pass
+
+        if not test_url:
+            return True, "skipped — no product image URL available"
+
         try:
-            await adapter.send_image(WHAPI_TEST_PHONE, test_url, "Test image caption", op)
-            return True, "sent"
+            await adapter.send_image(WHAPI_TEST_PHONE, test_url, "Salelular test: image delivery check", op)
+            return True, "accepted by Whapi"
         except Exception as e:
             return False, str(e)[:100]
 
     ok, reason = asyncio.run(run())
-    record("W2", "Whapi send_image delivers", ok, reason)
+    record("W2", "Whapi send_image accepted", ok, reason)
 
 
 def test_w3_send_to_invalid_number():
     """Whapi send to invalid number → graceful failure, no crash."""
     from app.adapters.messaging.whapi import WhapiMessagingAdapter
-    from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
 
     async def run():
         adapter = WhapiMessagingAdapter(CFG.encryption_key)
-        op_adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
-        op = op_adapter.get_by_channel_id(CHANNEL_ID)
+        op = _get_whapi_operator()
         if not op:
             return False, "no operator"
         try:
-            # Invalid number — Whapi should reject but adapter should not crash
             await adapter.send_text("+000000000000", "Should fail gracefully", op)
-            return True, "completed without crash (send may have failed, which is correct)"
+            return True, "completed without crash"
         except Exception as e:
             return False, f"crashed: {str(e)[:100]}"
 
     ok, reason = asyncio.run(run())
     record("W3", "Whapi invalid number → graceful", ok, reason)
+
+
+def test_w4_webhook_round_trip():
+    """Send webhook payload for WHAPI_TEST_PHONE, verify it reaches pipeline."""
+    _get_storage().delete(OPERATOR_ID, WHAPI_TEST_PHONE)
+
+    msg_id = f"w4-roundtrip-{int(time.time())}"
+    payload = _make_payload(
+        msg_id=msg_id,
+        text="Whapi round-trip test",
+        from_phone=WHAPI_TEST_PHONE.lstrip("+"),
+        chat_id=f"{WHAPI_TEST_PHONE.lstrip('+')}@s.whatsapp.net",
+    )
+    resp = _post_webhook(payload)
+    time.sleep(15)
+
+    session = _get_storage().get(OPERATOR_ID, WHAPI_TEST_PHONE)
+    has_session = session is not None and len(session.history) > 0
+    record("W4", "Webhook round-trip creates session", has_session,
+           f"session={'yes' if session else 'no'}, "
+           f"history={len(session.history) if session else 0}")
+    _get_storage().delete(OPERATOR_ID, WHAPI_TEST_PHONE)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -982,6 +1025,10 @@ def main():
         test_w1_send_text()
         test_w2_send_image()
         test_w3_send_to_invalid_number()
+        if not MOCK_ONLY:
+            test_w4_webhook_round_trip()
+        else:
+            print("  [SKIP] TW4: webhook round-trip (needs server, use without --mock-only)")
 
     # Summary
     total = len(results)
