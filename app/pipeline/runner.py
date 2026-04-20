@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from app.adapters.inventory.base import InventoryAdapter
@@ -20,6 +21,11 @@ import time as _time
 
 MAX_ALERT_CHARS = 200
 
+# Daily message cap — in-memory, resets at midnight UTC via date key
+_daily_counts: dict[tuple[str, str, str], int] = {}
+_daily_alerted: set[tuple[str, str, str]] = {}  # track which (op, phone, date) already alerted
+_cap_lock = asyncio.Lock()
+
 
 async def run(
     payloads: list[dict],
@@ -33,6 +39,7 @@ async def run(
     storage: StorageAdapter,
     max_history_turns: int,
     session_expiry_days: int,
+    max_messages_per_user_day: int = 100,
 ) -> None:
     """Phase 4 full pipeline.
 
@@ -72,12 +79,33 @@ async def run(
         log("pipeline_skipped", reason="owner_active", phone_hash=phone_hash)
         return
 
-    # NOTE: HANDED_OFF does NOT suppress the bot. The bot keeps chatting
-    # normally after a handoff trigger — the customer doesn't know anything
-    # changed. The bot only stops when the operator physically types in the
-    # customer thread (from_me:true → OWNER_ACTIVE). This was a deliberate
-    # design change: holding messages felt impersonal, and customers may
-    # want to keep browsing even after expressing buying intent.
+    # NOTE: HANDED_OFF does NOT suppress the bot.
+
+    # 3.5 Daily message cap
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    cap_key = (operator.operator_id, sender_phone, today)
+    async with _cap_lock:
+        count = _daily_counts.get(cap_key, 0) + 1
+        _daily_counts[cap_key] = count
+    if count > max_messages_per_user_day:
+        if cap_key not in _daily_alerted:
+            _daily_alerted.add(cap_key)
+            customer_name = session.name if session else "a customer"
+            alert = (
+                f"Hi {operator.owner_name}, {customer_name} has been very "
+                f"active today ({count} messages). Responses are paused "
+                f"until tomorrow to avoid overuse."
+            )
+            asyncio.create_task(
+                messaging.send_text(operator.owner_personal_phone, alert, operator)
+            )
+        log(
+            "daily_cap_reached",
+            operator_id=operator.operator_id,
+            phone_hash=phone_hash,
+            count=count,
+        )
+        return  # Silent — no reply to customer
 
     # 4. Language gate
     t0 = _time.monotonic()
@@ -141,6 +169,9 @@ async def run(
     llm_ms = int((_time.monotonic() - t0) * 1000)
 
     # 8. Send the reply (text + up to 3 product images)
+    # Empty reply_text means fatal failure (silence to customer — handled in conversation.py)
+    if not reply_text:
+        return
     t0 = _time.monotonic()
     await response_builder.send_response(
         sender_phone, reply_text, products, operator, messaging

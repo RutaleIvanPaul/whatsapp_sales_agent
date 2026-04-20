@@ -7,6 +7,7 @@ from app.adapters.inventory.base import InventoryAdapter
 from app.adapters.llm.base import LLMAdapter, LLMResponse, LLMTimeoutError, ToolResult
 from app.adapters.messaging.base import MessagingAdapter
 from app.adapters.storage.base import StorageAdapter
+from app.utils.cost_tracker import get_tracker
 from app.engine import system_prompt as system_prompt_mod
 from app.engine import tools as tools_mod
 from app.models.operator import Operator
@@ -15,9 +16,7 @@ from app.models.session import Session
 from app.utils.log import log
 
 MAX_TOOL_ROUNDS = 5
-FALLBACK_TIMEOUT_REPLY = (
-    "Sorry — I'm taking longer than expected. Please try again in a moment."
-)
+TIMEOUT_RETRY_WAITS = [3, 5]  # seconds to wait between attempts 1→2, 2→3
 FALLBACK_GENERIC_REPLY = (
     "Sorry — I had trouble processing that. Could you try rephrasing?"
 )
@@ -55,56 +54,17 @@ async def run(
     last_response: LLMResponse | None = None
 
     for round_idx in range(MAX_TOOL_ROUNDS):
-        try:
-            response = await llm.chat(
-                messages=messages,
-                tools=tools_mod.ALL_TOOLS,
-                system=system,
-            )
-            last_response = response
-        except LLMTimeoutError:
-            log("llm_timeout", operator_id=operator.operator_id, round=round_idx)
-            return _persist_and_return(
-                session, storage, operator, unified_text,
-                FALLBACK_TIMEOUT_REPLY, products_shown_this_turn, max_history_turns,
-            )
-        except Exception as e:
-            err_msg = str(e)[:300]
-            log(
-                "error",
-                component="conversation",
-                error_type=type(e).__name__,
-                message=err_msg,
-                operator_id=operator.operator_id,
-                round=round_idx,
-            )
-            # Recovery: some providers (notably Groq + Llama) reject the
-            # request when the model produces malformed tool-call args.
-            # Retry once without tools so the model can at least reply
-            # with plain text.
-            if _is_tool_use_failure(err_msg):
-                try:
-                    response = await llm.chat(
-                        messages=messages, tools=[], system=system,
-                    )
-                    last_response = response
-                    log(
-                        "llm_recovered_no_tools",
-                        operator_id=operator.operator_id,
-                        round=round_idx,
-                    )
-                except Exception:
-                    return _persist_and_return(
-                        session, storage, operator, unified_text,
-                        FALLBACK_GENERIC_REPLY, products_shown_this_turn,
-                        max_history_turns,
-                    )
-            else:
-                return _persist_and_return(
-                    session, storage, operator, unified_text,
-                    FALLBACK_GENERIC_REPLY, products_shown_this_turn,
-                    max_history_turns,
-                )
+        response = await _llm_call_with_retry(
+            llm, messages, tools_mod.ALL_TOOLS, system,
+            operator, session, storage, messaging, unified_text,
+            products_shown_this_turn, max_history_turns, round_idx,
+        )
+        if response is None:
+            # All retries exhausted — _llm_call_with_retry already
+            # handled failure (silence + HANDED_OFF + operator alert).
+            # Return empty to signal no reply should be sent.
+            return ("", [])
+        last_response = response
 
         if not response.tool_calls:
             reply = response.text or FALLBACK_GENERIC_REPLY
@@ -151,15 +111,151 @@ async def run(
         messages.extend(llm.make_tool_result_messages(tool_results))
 
     # Loop exhausted without a text reply
+    has_text = bool(last_response and last_response.text)
     log(
-        "tool_loop_exhausted",
+        "tool_loop_limit_exceeded",
         operator_id=operator.operator_id,
         rounds=MAX_TOOL_ROUNDS,
+        had_text=has_text,
     )
-    final_text = (last_response.text if last_response else None) or FALLBACK_GENERIC_REPLY
-    return _persist_and_return(
-        session, storage, operator, unified_text,
-        final_text, products_shown_this_turn, max_history_turns,
+    if has_text:
+        return _persist_and_return(
+            session, storage, operator, unified_text,
+            last_response.text, products_shown_this_turn, max_history_turns,
+        )
+    # No text at all — silence + HANDED_OFF + operator alert
+    await _handle_fatal_failure(
+        session, storage, operator, messaging, "tool loop exhausted without text"
+    )
+    return ("", [])
+
+
+# ── LLM retry + failure handling ─────────────────────────────────────────────
+
+
+async def _llm_call_with_retry(
+    llm: LLMAdapter,
+    messages: list[dict],
+    tools: list[dict],
+    system: str,
+    operator: Operator,
+    session: Session,
+    storage: StorageAdapter,
+    messaging: MessagingAdapter,
+    unified_text: str,
+    products_shown: list[Product],
+    max_history_turns: int,
+    round_idx: int,
+) -> LLMResponse | None:
+    """Call LLM with 3-attempt timeout retry. Returns None on fatal failure.
+
+    Attempt 1: full call, 30s timeout
+    Attempt 2: same, after 3s wait
+    Attempt 3: simplified prompt (no tools, no rules), after 5s wait
+    All 3 fail: silence + HANDED_OFF + operator alert → returns None
+    """
+    import asyncio as _asyncio
+
+    for attempt in range(3):
+        use_tools = tools if attempt < 2 else []
+        use_system = system if attempt < 2 else _build_simplified_system(operator, session)
+
+        try:
+            response = await llm.chat(
+                messages=messages,
+                tools=use_tools,
+                system=use_system,
+            )
+            # Record tokens for cost tracking
+            tracker = get_tracker()
+            if tracker:
+                tracker.record(
+                    operator.operator_id,
+                    response.input_tokens,
+                    response.output_tokens,
+                )
+            return response
+        except LLMTimeoutError:
+            log(
+                "llm_timeout_attempt",
+                operator_id=operator.operator_id,
+                attempt=attempt + 1,
+                round=round_idx,
+            )
+            if attempt < 2:
+                await _asyncio.sleep(TIMEOUT_RETRY_WAITS[attempt])
+                continue
+            # Attempt 3 timed out — fall through to fatal
+        except Exception as e:
+            err_msg = str(e)[:300]
+            log(
+                "error",
+                component="conversation",
+                error_type=type(e).__name__,
+                message=err_msg,
+                operator_id=operator.operator_id,
+                round=round_idx,
+                attempt=attempt + 1,
+            )
+            # Tool-use failure recovery (Groq + Llama)
+            if _is_tool_use_failure(err_msg) and attempt < 2:
+                try:
+                    response = await llm.chat(
+                        messages=messages, tools=[], system=system,
+                    )
+                    log("llm_recovered_no_tools", operator_id=operator.operator_id)
+                    return response
+                except Exception:
+                    pass
+            # Non-timeout error on first attempt → don't retry
+            if attempt == 0 and not isinstance(e, LLMTimeoutError):
+                break
+
+    # All attempts exhausted
+    await _handle_fatal_failure(
+        session, storage, operator, messaging, "all LLM attempts failed"
+    )
+    return None
+
+
+def _build_simplified_system(operator: Operator, session: Session) -> str:
+    """Minimal system prompt for attempt 3 — persona + context only."""
+    name = session.name or "the customer"
+    return (
+        f"You are a friendly sales assistant for {operator.shop_name}. "
+        f"You are chatting with {name}. "
+        f"Reply briefly and naturally. You cannot search for products right now."
+    )
+
+
+async def _handle_fatal_failure(
+    session: Session,
+    storage: StorageAdapter,
+    operator: Operator,
+    messaging: MessagingAdapter,
+    reason: str,
+) -> None:
+    """Silence to customer, HANDED_OFF, operator alert."""
+    session.stage = Stage.HANDED_OFF
+    from datetime import datetime
+    session.handed_off_at = datetime.utcnow()
+    storage.set(operator.operator_id, session.phone, session)
+
+    customer_name = session.name or "a customer"
+    alert = (
+        f"Hi {operator.owner_name}, I'm having trouble responding to "
+        f"{customer_name} right now. You may want to step in — "
+        f"find them in your shop's WhatsApp and pick up the conversation."
+    )
+    import asyncio as _asyncio
+    _asyncio.create_task(
+        messaging.send_text(operator.owner_personal_phone, alert, operator)
+    )
+
+    log(
+        "llm_timeout_fatal",
+        operator_id=operator.operator_id,
+        reason=reason,
     )
 
 
