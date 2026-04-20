@@ -45,8 +45,19 @@ from app.utils.sent_tracker import SentTracker
 CFG = validate()
 OPERATOR_ID = "op-cfd4493e"
 BASE_URL = "http://localhost:8000"
-CUSTOMER_PHONE = "+256702246015"  # test customer
+# Dedicated test phone — NOT a real customer number. This is the operator's
+# own personal phone used only for test webhook payloads. Never use a
+# customer number that the operator has been working with.
 OWNER_PHONE = os.getenv("OWNER_PERSONAL_PHONE", "+256705878284")
+
+# For tests that create sessions via webhook, use the OWNER phone as the
+# simulated "customer" since we control it. For pure unit tests, use
+# placeholder numbers that are never sent to via Whapi.
+WEBHOOK_TEST_PHONE = OWNER_PHONE  # webhook tests route to this phone
+UNIT_TEST_PHONE = "+256700000001"  # never reaches Whapi, logic tests only
+
+# Mode flag
+MOCK_ONLY = "--mock-only" in sys.argv
 
 results: list[tuple[int, str, bool, str]] = []
 
@@ -77,13 +88,17 @@ WEBHOOK_SECRET = _get_webhook_secret()
 def _make_payload(
     msg_id: str = "test-msg-001",
     text: str = "hello",
-    from_phone: str = "256702246015",
+    from_phone: str | None = None,
     from_me: bool = False,
-    chat_id: str = "256702246015@s.whatsapp.net",
+    chat_id: str | None = None,
     msg_type: str = "text",
     event_type: str = "messages",
     channel_id: str | None = None,
 ) -> dict:
+    if from_phone is None:
+        from_phone = WEBHOOK_TEST_PHONE.lstrip("+")
+    if chat_id is None:
+        chat_id = f"{from_phone}@s.whatsapp.net"
     return {
         "channel_id": channel_id or CHANNEL_ID,
         "event": {"type": event_type, "event": "post"},
@@ -128,7 +143,7 @@ def _delete_session(phone: str) -> None:
 
 
 def _make_session(
-    phone: str = CUSTOMER_PHONE,
+    phone: str = UNIT_TEST_PHONE,
     stage: Stage = Stage.EXPLORING,
     **overrides,
 ) -> Session:
@@ -261,8 +276,8 @@ def test_8_bot_active_during_handoff():
     Design change: HANDED_OFF no longer suppresses the bot. The bot only
     stops when the operator types in the customer thread (OWNER_ACTIVE).
     """
-    t8_phone = "+256700800800"
-    t8_from = "256700800800"
+    t8_phone = WEBHOOK_TEST_PHONE
+    t8_from = WEBHOOK_TEST_PHONE.lstrip("+")
     _get_storage().delete(OPERATOR_ID, t8_phone)
     time.sleep(1)
 
@@ -815,37 +830,43 @@ def _make_test_operator() -> Operator:
 
 
 def main():
+    mode = "MOCK-ONLY (logic tests)" if MOCK_ONLY else "FULL (logic + Whapi integration)"
     print("=" * 60)
-    print("Phase 5 Edge-Case Test Suite (20 tests)")
+    print(f"Edge-Case Test Suite — {mode}")
     print("=" * 60)
 
-    # Check server is running
-    try:
-        r = httpx.get(f"{BASE_URL}/health", timeout=5)
-        assert r.status_code == 200, f"Health check failed: {r.status_code}"
-        print(f"\nServer running at {BASE_URL}\n")
-    except Exception as e:
-        print(f"\nFATAL: Server not running at {BASE_URL}: {e}")
-        print("Start it first: uvicorn app.main:app --host 0.0.0.0 --port 8000")
-        raise SystemExit(1)
+    if not MOCK_ONLY:
+        # Check server is running (needed for webhook tests)
+        try:
+            r = httpx.get(f"{BASE_URL}/health", timeout=5)
+            assert r.status_code == 200, f"Health check failed: {r.status_code}"
+            print(f"\nServer running at {BASE_URL}")
+            print(f"Webhook test phone: {WEBHOOK_TEST_PHONE}\n")
+        except Exception as e:
+            print(f"\nFATAL: Server not running at {BASE_URL}: {e}")
+            print("Start it first: uvicorn app.main:app --host 0.0.0.0 --port 8000")
+            print("Or run with --mock-only to skip Whapi integration tests")
+            raise SystemExit(1)
 
-    print("WEBHOOK FILTERING:")
-    test_1_bad_auth()
-    test_2_unknown_channel()
-    test_3_group_message()
-    test_4_status_event()
-    test_5_duplicate_message()
+        print("WEBHOOK INTEGRATION (requires server):")
+        test_1_bad_auth()
+        test_2_unknown_channel()
+        test_3_group_message()
+        test_4_status_event()
+        test_5_duplicate_message()
+        test_8_bot_active_during_handoff()
+        test_9_owner_active_only_suppression()
+        test_10_resume_command()
+        test_11_handled_command()
+        test_12_passive_interruption()
+    else:
+        print("\nSkipping webhook integration tests (--mock-only)\n")
 
-    print("\nBUFFER:")
+    print("\nBUFFER (logic):")
     test_6_force_flush()
     test_7_rate_limit()
 
-    print("\nHANDOFF & SESSION STAGES:")
-    test_8_bot_active_during_handoff()
-    test_9_owner_active_only_suppression()
-    test_10_resume_command()
-    test_11_handled_command()
-    test_12_passive_interruption()
+    print("\nLOGIC TESTS:")
     test_13_bot_echo_filtered()
 
     print("\nINVENTORY:")
