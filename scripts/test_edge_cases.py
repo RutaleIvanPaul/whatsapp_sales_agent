@@ -43,8 +43,18 @@ from app.utils.sent_tracker import SentTracker
 # ── Setup ────────────────────────────────────────────────────────────────────
 
 CFG = validate()
-OPERATOR_ID = "op-cfd4493e"
 BASE_URL = "http://localhost:8000"
+
+# Discover test operator ID dynamically from DB
+def _find_operator_id() -> str:
+    from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
+    adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
+    op = adapter.get_by_channel_id(os.getenv("WHAPI_CHANNEL_ID", "SPRWMN-5ULYD"))
+    if op:
+        return op.operator_id
+    return "op-unknown"
+
+OPERATOR_ID = _find_operator_id()
 # Dedicated test phone — NOT a real customer number. This is the operator's
 # own personal phone used only for test webhook payloads. Never use a
 # customer number that the operator has been working with.
