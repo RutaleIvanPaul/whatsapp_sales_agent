@@ -56,13 +56,21 @@ OWNER_PHONE = os.getenv("OWNER_PERSONAL_PHONE", "+256705878284")
 WEBHOOK_TEST_PHONE = OWNER_PHONE  # webhook tests route to this phone
 UNIT_TEST_PHONE = "+256700000001"  # never reaches Whapi, logic tests only
 
-# Mode flag
+# Mode flags
+# --mock-only:  logic tests only, no server needed, no Whapi calls
+# (default):    logic + webhook filtering via localhost, server needed, no outbound sends
+# --whapi-live: full Whapi integration including outbound sends to WHAPI_TEST_PHONE.
+#               Only run when investigating Whapi API behaviour.
+#               Requires WHAPI_TEST_PHONE env var — a number the operator controls
+#               and consents to receiving test messages on.
 MOCK_ONLY = "--mock-only" in sys.argv
+WHAPI_LIVE = "--whapi-live" in sys.argv
+WHAPI_TEST_PHONE = os.getenv("WHAPI_TEST_PHONE", "")
 
-results: list[tuple[int, str, bool, str]] = []
+results: list[tuple[Any, str, bool, str]] = []
 
 
-def record(num: int, name: str, passed: bool, reason: str = "") -> None:
+def record(num: Any, name: str, passed: bool, reason: str = "") -> None:
     status = "PASS" if passed else "FAIL"
     results.append((num, name, passed, reason))
     print(f"  [{status}] T{num}: {name}" + (f" — {reason}" if reason else ""))
@@ -826,6 +834,77 @@ def _make_test_operator() -> Operator:
     )
 
 
+# ── WHAPI LIVE TESTS (only with --whapi-live) ────────────────────────────────
+# These send REAL messages via the Whapi API to WHAPI_TEST_PHONE.
+# Only run when investigating Whapi API behaviour, not for normal builds.
+
+
+def test_w1_send_text():
+    """Whapi send_text → message delivered, 200 response."""
+    from app.adapters.messaging.whapi import WhapiMessagingAdapter
+    from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
+
+    async def run():
+        adapter = WhapiMessagingAdapter(CFG.encryption_key)
+        op_adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
+        op = op_adapter.get_by_channel_id(CHANNEL_ID)
+        if not op:
+            return False, "no operator"
+        try:
+            await adapter.send_text(WHAPI_TEST_PHONE, "Whapi test: text message", op)
+            return True, "sent"
+        except Exception as e:
+            return False, str(e)[:100]
+
+    ok, reason = asyncio.run(run())
+    record("W1", "Whapi send_text delivers", ok, reason)
+
+
+def test_w2_send_image():
+    """Whapi send_image with a known good URL → delivered."""
+    from app.adapters.messaging.whapi import WhapiMessagingAdapter
+    from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
+
+    async def run():
+        adapter = WhapiMessagingAdapter(CFG.encryption_key)
+        op_adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
+        op = op_adapter.get_by_channel_id(CHANNEL_ID)
+        if not op:
+            return False, "no operator"
+        # Use a public test image
+        test_url = "https://via.placeholder.com/300x200.png?text=Whapi+Test"
+        try:
+            await adapter.send_image(WHAPI_TEST_PHONE, test_url, "Test image caption", op)
+            return True, "sent"
+        except Exception as e:
+            return False, str(e)[:100]
+
+    ok, reason = asyncio.run(run())
+    record("W2", "Whapi send_image delivers", ok, reason)
+
+
+def test_w3_send_to_invalid_number():
+    """Whapi send to invalid number → graceful failure, no crash."""
+    from app.adapters.messaging.whapi import WhapiMessagingAdapter
+    from app.adapters.operator.sqlite_adapter import SqliteOperatorAdapter
+
+    async def run():
+        adapter = WhapiMessagingAdapter(CFG.encryption_key)
+        op_adapter = SqliteOperatorAdapter(CFG.storage_db_path, CFG.encryption_key)
+        op = op_adapter.get_by_channel_id(CHANNEL_ID)
+        if not op:
+            return False, "no operator"
+        try:
+            # Invalid number — Whapi should reject but adapter should not crash
+            await adapter.send_text("+000000000000", "Should fail gracefully", op)
+            return True, "completed without crash (send may have failed, which is correct)"
+        except Exception as e:
+            return False, f"crashed: {str(e)[:100]}"
+
+    ok, reason = asyncio.run(run())
+    record("W3", "Whapi invalid number → graceful", ok, reason)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -894,6 +973,16 @@ def main():
     test_29_config_missing_encryption_key()
     test_30_config_invalid_google_creds()
 
+    if WHAPI_LIVE:
+        if not WHAPI_TEST_PHONE:
+            print("\nFATAL: --whapi-live requires WHAPI_TEST_PHONE env var")
+            print("Set it to a phone number you control and consent to receiving test messages on.")
+            raise SystemExit(1)
+        print(f"\nWHAPI LIVE INTEGRATION (sends real messages to {WHAPI_TEST_PHONE}):")
+        test_w1_send_text()
+        test_w2_send_image()
+        test_w3_send_to_invalid_number()
+
     # Summary
     total = len(results)
     passed = sum(1 for _, _, ok, _ in results if ok)
@@ -906,7 +995,7 @@ def main():
         for n, name, reason in failed:
             print(f"  T{n}: {name} — {reason}")
     else:
-        print("ALL TESTS PASSED — Phase 6 complete")
+        print("ALL TESTS PASSED")
     print("=" * 60)
 
     return 0 if not failed else 1
