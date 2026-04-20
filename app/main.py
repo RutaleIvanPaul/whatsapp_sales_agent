@@ -20,6 +20,7 @@ from app.pipeline import runner as pipeline_runner
 from app.queue.queue import init_queue
 from app.queue.worker import QueueWorker
 from app.utils.contacts import ContactsCache
+from app.utils.cost_tracker import CostTracker, set_tracker
 from app.utils.crypto import decrypt
 from app.utils.log import log
 from app.webhook import session_disconnect_handler
@@ -141,6 +142,15 @@ async def lifespan(app: FastAPI):
     llm_adapter = llm_factory.from_config(cfg)
     classifier_llm = llm_factory.from_config(cfg, model=cfg.classifier_model)
     vision_adapter = vision_factory.from_config(cfg)
+    # --- Step 5c: Cost tracker (Phase 6) ---
+    cost_tracker = CostTracker(
+        provider=cfg.llm_provider,
+        input_rate_per_1k=cfg.input_token_rate_per_1k,
+        output_rate_per_1k=cfg.output_token_rate_per_1k,
+    )
+    set_tracker(cost_tracker)
+    _spawn(cost_tracker.start_midnight_task())
+
     log(
         "startup",
         phase="llm_ready",
@@ -190,6 +200,7 @@ async def lifespan(app: FastAPI):
             storage=storage_adapter,
             max_history_turns=cfg.max_history_turns,
             session_expiry_days=cfg.session_expiry_days,
+            max_messages_per_user_day=cfg.max_messages_per_user_day,
         )
 
     worker = QueueWorker(message_queue, buffer, flush_for_operator)
@@ -214,6 +225,7 @@ async def lifespan(app: FastAPI):
     app.state.encryption_key = cfg.encryption_key
     app.state.message_queue = message_queue
     app.state.buffer = buffer
+    app.state.cost_tracker = cost_tracker
     log("startup", phase="ready", port=cfg.port)
 
     yield

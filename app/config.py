@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ class Config:
     buffer_debounce_ms: int
     buffer_rate_limit_s: int
     whapi_health_check_interval_s: int
+    max_messages_per_user_day: int
     port: int
 
     # LLM (Phase 4 + multi-provider)
@@ -37,62 +39,138 @@ class Config:
     max_history_turns: int
     session_expiry_days: int
 
+    # Cost tracking rates (USD per 1K tokens)
+    input_token_rate_per_1k: float
+    output_token_rate_per_1k: float
+
+    # Server URL (for webhook config in onboarding)
+    server_url: str
+
 
 def validate() -> Config:
+    """Load and validate all env vars. Collects ALL errors before exiting."""
     load_dotenv()
+    errors: list[str] = []
 
+    # ── ENCRYPTION_KEY ───────────────────────────────────────────────
+    encryption_key = b""
     encryption_key_b64 = os.getenv("ENCRYPTION_KEY", "")
     if not encryption_key_b64:
-        print("FATAL: ENCRYPTION_KEY is required but not set.", file=sys.stderr)
-        raise SystemExit(1)
+        errors.append("ENCRYPTION_KEY: required but not set")
+    else:
+        try:
+            encryption_key = base64.b64decode(encryption_key_b64)
+            if len(encryption_key) != 32:
+                errors.append(
+                    f"ENCRYPTION_KEY: must decode to 32 bytes, got {len(encryption_key)}"
+                )
+        except Exception:
+            errors.append("ENCRYPTION_KEY: not valid base64")
 
-    try:
-        encryption_key = base64.b64decode(encryption_key_b64)
-    except Exception:
-        print("FATAL: ENCRYPTION_KEY is not valid base64.", file=sys.stderr)
-        raise SystemExit(1)
-
-    if len(encryption_key) != 32:
-        print(
-            f"FATAL: ENCRYPTION_KEY must decode to 32 bytes, got {len(encryption_key)}.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
+    # ── STORAGE_URL ──────────────────────────────────────────────────
     storage_url = os.getenv("STORAGE_URL", "")
     if not storage_url:
-        print("FATAL: STORAGE_URL is required but not set.", file=sys.stderr)
-        raise SystemExit(1)
+        errors.append("STORAGE_URL: required but not set")
+    storage_db_path = _sqlite_path(storage_url) if storage_url else ""
 
-    # Parse sqlite:///path to get the file path
-    storage_db_path = _sqlite_path(storage_url)
-
+    # ── GOOGLE_CREDENTIALS_JSON ──────────────────────────────────────
     google_credentials_json_b64 = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    if google_credentials_json_b64:
+        try:
+            creds_raw = base64.b64decode(google_credentials_json_b64)
+            creds_json = json.loads(creds_raw)
+            for key in ("type", "project_id", "private_key", "client_email"):
+                if key not in creds_json:
+                    errors.append(
+                        f"GOOGLE_CREDENTIALS_JSON: missing required key '{key}'"
+                    )
+        except Exception as e:
+            errors.append(
+                f"GOOGLE_CREDENTIALS_JSON: invalid base64 or JSON ({type(e).__name__})"
+            )
+
     google_sheets_id = os.getenv("GOOGLE_SHEETS_ID", "")
     google_sheet_name = os.getenv("GOOGLE_SHEET_NAME", "Sheet1")
 
-    search_threshold = int(os.getenv("SEARCH_THRESHOLD", "70"))
-    inventory_refresh_interval_s = int(os.getenv("INVENTORY_REFRESH_INTERVAL_S", "300"))
-
-    buffer_debounce_ms = int(os.getenv("BUFFER_DEBOUNCE_MS", "3000"))
-    buffer_rate_limit_s = int(os.getenv("BUFFER_RATE_LIMIT_S", "8"))
-    whapi_health_check_interval_s = int(os.getenv("WHAPI_HEALTH_CHECK_INTERVAL_S", "1800"))
-    port = int(os.getenv("PORT", "8000"))
-
-    # LLM provider — Anthropic by default, Groq fallback for the temporary
-    # "no Anthropic credit" path. Same key shape (LLM_API_KEY) for either.
+    # ── LLM_PROVIDER ────────────────────────────────────────────────
     llm_provider = os.getenv("LLM_PROVIDER", "anthropic")
+    if llm_provider not in ("anthropic", "groq"):
+        errors.append(
+            f"LLM_PROVIDER: must be 'anthropic' or 'groq', got '{llm_provider}'"
+        )
+
     llm_api_key = os.getenv("LLM_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL", "claude-sonnet-4-6")
 
-    # Vision can use a different provider than the conversation LLM.
     vision_provider = os.getenv("VISION_PROVIDER", llm_provider)
+    if vision_provider not in ("anthropic", "groq"):
+        errors.append(
+            f"VISION_PROVIDER: must be 'anthropic' or 'groq', got '{vision_provider}'"
+        )
     vision_api_key = os.getenv("VISION_API_KEY") or llm_api_key
     vision_model = os.getenv("VISION_MODEL", "claude-sonnet-4-6")
 
     classifier_model = os.getenv("CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
-    max_history_turns = int(os.getenv("MAX_HISTORY_TURNS", "10"))
-    session_expiry_days = int(os.getenv("SESSION_EXPIRY_DAYS", "7"))
+
+    # ── Numeric vars ─────────────────────────────────────────────────
+    numeric_vars = {
+        "SEARCH_THRESHOLD": ("70", 1, 100),
+        "INVENTORY_REFRESH_INTERVAL_S": ("300", 10, 86400),
+        "BUFFER_DEBOUNCE_MS": ("3000", 500, 30000),
+        "BUFFER_RATE_LIMIT_S": ("8", 1, 300),
+        "WHAPI_HEALTH_CHECK_INTERVAL_S": ("1800", 60, 86400),
+        "MAX_MESSAGES_PER_USER_DAY": ("100", 1, 10000),
+        "PORT": ("8000", 1, 65535),
+        "MAX_HISTORY_TURNS": ("10", 2, 100),
+        "SESSION_EXPIRY_DAYS": ("7", 1, 365),
+    }
+    parsed_nums: dict[str, int] = {}
+    for var, (default, min_val, max_val) in numeric_vars.items():
+        raw = os.getenv(var, default)
+        try:
+            val = int(raw)
+            if val < min_val or val > max_val:
+                errors.append(f"{var}: {val} out of range [{min_val}, {max_val}]")
+            parsed_nums[var] = val
+        except ValueError:
+            errors.append(f"{var}: must be an integer, got '{raw}'")
+            parsed_nums[var] = int(default)
+
+    # ── Cost rates ───────────────────────────────────────────────────
+    if llm_provider == "groq":
+        default_input_rate, default_output_rate = "0.0005", "0.001"
+    else:
+        default_input_rate, default_output_rate = "0.003", "0.015"
+    try:
+        input_token_rate = float(os.getenv("INPUT_TOKEN_RATE_PER_1K", default_input_rate))
+    except ValueError:
+        errors.append("INPUT_TOKEN_RATE_PER_1K: must be a number")
+        input_token_rate = float(default_input_rate)
+    try:
+        output_token_rate = float(os.getenv("OUTPUT_TOKEN_RATE_PER_1K", default_output_rate))
+    except ValueError:
+        errors.append("OUTPUT_TOKEN_RATE_PER_1K: must be a number")
+        output_token_rate = float(default_output_rate)
+
+    server_url = os.getenv("SERVER_URL", "")
+
+    # ── Report errors ────────────────────────────────────────────────
+    if errors:
+        print("FATAL: Configuration errors:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        raise SystemExit(1)
+
+    # ── Success summary ──────────────────────────────────────────────
+    def _mask(s: str) -> str:
+        return s[:4] + "***" if len(s) > 4 else "***"
+
+    print("Config OK:")
+    print(f"  STORAGE_URL: {storage_url}")
+    print(f"  LLM_PROVIDER: {llm_provider}")
+    print(f"  LLM_MODEL: {llm_model}")
+    print(f"  LLM_API_KEY: {_mask(llm_api_key)}")
+    print(f"  ENCRYPTION_KEY: {_mask(encryption_key_b64)}")
 
     return Config(
         encryption_key=encryption_key,
@@ -101,12 +179,13 @@ def validate() -> Config:
         google_credentials_json_b64=google_credentials_json_b64,
         google_sheets_id=google_sheets_id,
         google_sheet_name=google_sheet_name,
-        search_threshold=search_threshold,
-        inventory_refresh_interval_s=inventory_refresh_interval_s,
-        buffer_debounce_ms=buffer_debounce_ms,
-        buffer_rate_limit_s=buffer_rate_limit_s,
-        whapi_health_check_interval_s=whapi_health_check_interval_s,
-        port=port,
+        search_threshold=parsed_nums["SEARCH_THRESHOLD"],
+        inventory_refresh_interval_s=parsed_nums["INVENTORY_REFRESH_INTERVAL_S"],
+        buffer_debounce_ms=parsed_nums["BUFFER_DEBOUNCE_MS"],
+        buffer_rate_limit_s=parsed_nums["BUFFER_RATE_LIMIT_S"],
+        whapi_health_check_interval_s=parsed_nums["WHAPI_HEALTH_CHECK_INTERVAL_S"],
+        max_messages_per_user_day=parsed_nums["MAX_MESSAGES_PER_USER_DAY"],
+        port=parsed_nums["PORT"],
         llm_provider=llm_provider,
         llm_api_key=llm_api_key,
         llm_model=llm_model,
@@ -114,8 +193,11 @@ def validate() -> Config:
         vision_api_key=vision_api_key,
         vision_model=vision_model,
         classifier_model=classifier_model,
-        max_history_turns=max_history_turns,
-        session_expiry_days=session_expiry_days,
+        max_history_turns=parsed_nums["MAX_HISTORY_TURNS"],
+        session_expiry_days=parsed_nums["SESSION_EXPIRY_DAYS"],
+        input_token_rate_per_1k=input_token_rate,
+        output_token_rate_per_1k=output_token_rate,
+        server_url=server_url,
     )
 
 

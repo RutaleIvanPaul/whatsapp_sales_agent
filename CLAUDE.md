@@ -21,8 +21,8 @@ Read only the section you need. Never load the entire file at once.
 
 ## Current phase
 
-PHASE 5 — Handoff and Owner Control
-Read .claude/prompts/phase5.md before doing anything else.
+PHASE 6 — Resilience
+Read .claude/prompts/phase6.md before doing anything else.
 Update this line when advancing phases.
 
 ---
@@ -61,7 +61,7 @@ salelular/
 │       ├── phase2.md
 │       ├── phase3.md
 │       ├── phase4.md
-│       ├── phase5.md
+│       ├── phase6.md
 │       └── phase6.md
 ├── poc.py               (Phase 0 only — deleted after POC passes)
 ├── app/

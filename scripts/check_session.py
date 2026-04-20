@@ -269,8 +269,70 @@ def create_test_operator():
     print("  Header:  X-Salelular-Token: <the secret above>")
 
 
+def list_sessions():
+    """List sessions for an operator, optionally filtered by stage."""
+    cfg = validate()
+    storage = SqliteStorageAdapter(cfg.storage_db_path)
+
+    op_id = None
+    stage_filter = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--list" and i + 1 < len(sys.argv):
+            op_id = sys.argv[i + 1]
+        if arg == "--stage" and i + 1 < len(sys.argv):
+            stage_filter = sys.argv[i + 1]
+
+    if not op_id:
+        print("Usage: --list {operator_id} [--stage {stage}]", file=sys.stderr)
+        raise SystemExit(1)
+
+    # Get all sessions by scanning all stages
+    all_stages = [s.value for s in Stage]
+    sessions = []
+    for stage_val in all_stages:
+        sessions.extend(storage.get_by_stage(op_id, stage_val))
+
+    if stage_filter:
+        sessions = [s for s in sessions if s.stage.value == stage_filter]
+
+    if not sessions:
+        print(f"No sessions found for {op_id}" +
+              (f" (stage={stage_filter})" if stage_filter else ""))
+        return
+
+    print(f"Sessions for {op_id}:")
+    for s in sessions:
+        print(f"  {s.phone}  stage={s.stage.value}  name={s.name or '?'}  "
+              f"intent={s.intent or '?'}  history={len(s.history)} turns  "
+              f"last_active={s.last_active}")
+
+
+def reset_cap():
+    """Reset daily message count for a phone (testing only)."""
+    from app.pipeline.runner import _daily_counts, _daily_alerted
+
+    phone = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--reset-cap" and i + 1 < len(sys.argv):
+            phone = sys.argv[i + 1]
+
+    if not phone:
+        print("Usage: --reset-cap {phone}", file=sys.stderr)
+        raise SystemExit(1)
+
+    # Can't reset the in-memory dict of a running server from here.
+    # This is for documentation/testing purposes.
+    print(f"Note: daily cap is in-memory on the running server process.")
+    print(f"To reset, restart the server (caps reset on restart).")
+    print(f"Or wait until midnight UTC (caps reset via date key change).")
+
+
 if __name__ == "__main__":
     if "--create-test-operator" in sys.argv:
         create_test_operator()
+    elif "--list" in sys.argv:
+        list_sessions()
+    elif "--reset-cap" in sys.argv:
+        reset_cap()
     else:
         main()
