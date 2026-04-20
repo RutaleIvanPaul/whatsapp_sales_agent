@@ -482,3 +482,49 @@ contributor was the handoff alert blocking the pipeline (22s).
 **Buffer debounce kept at 3s** — user decision.
 
 **Date:** Phase 5 (April 2026)
+
+---
+
+## 21. LLM timeout retry strategy (3 attempts with degradation)
+
+**Decision:** Never send a fallback message on first timeout. Retry up
+to 3 times with a simplified prompt on the third attempt. Only after all
+3 fail: silence to customer, operator alert, session → HANDED_OFF.
+
+**Why:** A retry costs 30 seconds maximum. A confused fallback message
+("Sorry, I'm having trouble") costs customer trust and breaks the human
+illusion. Retrying with a simplified prompt (no tools, brief reply) on
+the third attempt gives the model a better chance of responding.
+
+**Date:** Phase 6 (April 2026)
+
+---
+
+## 22. Daily cap as silence plus single operator alert
+
+**Decision:** When a customer exceeds MAX_MESSAGES_PER_USER_DAY, stop
+responding silently. Alert the operator once only — not on every
+subsequent message.
+
+**Why:** Silence is less disruptive than a cutoff notice ("you've sent
+too many messages today"). The operator is informed once so they are
+aware of unusual activity. Not alerted on every subsequent message to
+avoid alert fatigue. Resets automatically at midnight UTC.
+
+**Date:** Phase 6 (April 2026)
+
+---
+
+## 23. Onboarding script handles registration only
+
+**Decision:** scripts/onboard_operator.py handles system registration.
+QR scanning happens in the Whapi dashboard — the tool designed for it.
+The script receives already-connected channel credentials and handles
+everything else (webhook config, DB record, inventory load).
+
+**Why:** Separation of concerns. QR delivery adds complexity (HTML
+generation, email, image sending) with no reliability gain. The Whapi
+dashboard is purpose-built for this. The script focuses on what only
+the system can do: webhook configuration, encryption, DB writes.
+
+**Date:** Phase 6 (April 2026)

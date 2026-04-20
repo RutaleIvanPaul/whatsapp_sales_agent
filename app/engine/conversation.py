@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import datetime
 
@@ -12,7 +13,7 @@ from app.engine import system_prompt as system_prompt_mod
 from app.engine import tools as tools_mod
 from app.models.operator import Operator
 from app.models.product import Product
-from app.models.session import Session
+from app.models.session import Session, Stage
 from app.utils.log import log
 
 MAX_TOOL_ROUNDS = 5
@@ -154,8 +155,6 @@ async def _llm_call_with_retry(
     Attempt 3: simplified prompt (no tools, no rules), after 5s wait
     All 3 fail: silence + HANDED_OFF + operator alert → returns None
     """
-    import asyncio as _asyncio
-
     for attempt in range(3):
         use_tools = tools if attempt < 2 else []
         use_system = system if attempt < 2 else _build_simplified_system(operator, session)
@@ -183,7 +182,7 @@ async def _llm_call_with_retry(
                 round=round_idx,
             )
             if attempt < 2:
-                await _asyncio.sleep(TIMEOUT_RETRY_WAITS[attempt])
+                await asyncio.sleep(TIMEOUT_RETRY_WAITS[attempt])
                 continue
             # Attempt 3 timed out — fall through to fatal
         except Exception as e:
@@ -237,7 +236,6 @@ async def _handle_fatal_failure(
 ) -> None:
     """Silence to customer, HANDED_OFF, operator alert."""
     session.stage = Stage.HANDED_OFF
-    from datetime import datetime
     session.handed_off_at = datetime.utcnow()
     storage.set(operator.operator_id, session.phone, session)
 
@@ -247,8 +245,7 @@ async def _handle_fatal_failure(
         f"{customer_name} right now. You may want to step in — "
         f"find them in your shop's WhatsApp and pick up the conversation."
     )
-    import asyncio as _asyncio
-    _asyncio.create_task(
+    asyncio.create_task(
         messaging.send_text(operator.owner_personal_phone, alert, operator)
     )
 

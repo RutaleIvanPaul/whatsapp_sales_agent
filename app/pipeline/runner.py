@@ -23,8 +23,15 @@ MAX_ALERT_CHARS = 200
 
 # Daily message cap — in-memory, resets at midnight UTC via date key
 _daily_counts: dict[tuple[str, str, str], int] = {}
-_daily_alerted: set[tuple[str, str, str]] = {}  # track which (op, phone, date) already alerted
-_cap_lock = asyncio.Lock()
+_daily_alerted: set[tuple[str, str, str]] = set()
+_cap_lock: asyncio.Lock | None = None
+
+
+def _get_cap_lock() -> asyncio.Lock:
+    global _cap_lock
+    if _cap_lock is None:
+        _cap_lock = asyncio.Lock()
+    return _cap_lock
 
 
 async def run(
@@ -84,7 +91,7 @@ async def run(
     # 3.5 Daily message cap
     today = datetime.utcnow().strftime("%Y-%m-%d")
     cap_key = (operator.operator_id, sender_phone, today)
-    async with _cap_lock:
+    async with _get_cap_lock():
         count = _daily_counts.get(cap_key, 0) + 1
         _daily_counts[cap_key] = count
     if count > max_messages_per_user_day:
