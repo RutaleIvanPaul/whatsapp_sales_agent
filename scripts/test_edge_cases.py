@@ -60,10 +60,11 @@ OPERATOR_ID = _find_operator_id()
 # customer number that the operator has been working with.
 OWNER_PHONE = os.getenv("OWNER_PERSONAL_PHONE", "+256705878284")
 
-# For tests that create sessions via webhook, use the OWNER phone as the
-# simulated "customer" since we control it. For pure unit tests, use
-# placeholder numbers that are never sent to via Whapi.
-WEBHOOK_TEST_PHONE = OWNER_PHONE  # webhook tests route to this phone
+# For webhook filtering tests (T1-T5), use a phone that is NOT the
+# operator's personal phone (to avoid triggering control thread routing)
+# and NOT a saved contact. These tests only check HTTP status codes —
+# the messages never reach the pipeline.
+WEBHOOK_TEST_PHONE = "+256799999999"  # arbitrary, only used in test payloads
 UNIT_TEST_PHONE = "+256700000001"  # never reaches Whapi, logic tests only
 
 # Mode flags
@@ -222,7 +223,6 @@ def test_4_status_event():
 
 def test_5_duplicate_message():
     unique_id = f"t5-dedup-{int(time.time())}"
-    _delete_session(CUSTOMER_PHONE)
     payload = _make_payload(msg_id=unique_id, text="dedup test")
     resp1 = _post_webhook(payload)
     time.sleep(0.5)
