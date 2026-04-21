@@ -47,7 +47,23 @@ class GoogleSheetsLoader:
                     if attempt < MAX_RETRIES - 1:
                         await asyncio.sleep(BACKOFF_SECONDS[attempt])
                     continue
-                raise SheetsLoadError(f"Sheets API error: {e}") from e
+                # Specific error messages based on HTTP status
+                if status == 400 and "Unable to parse range" in str(e):
+                    raise SheetsLoadError(
+                        f"Sheet tab name '{self._sheet_name}' not found. "
+                        f"Check the tab name at the bottom of your Google Sheet."
+                    ) from e
+                elif status == 403:
+                    raise SheetsLoadError(
+                        f"Permission denied. The sheet is not shared with "
+                        f"the service account as Viewer."
+                    ) from e
+                elif status == 404:
+                    raise SheetsLoadError(
+                        f"Sheet not found. Check the Sheet ID is correct "
+                        f"(the long string from the sheet URL)."
+                    ) from e
+                raise SheetsLoadError(f"Sheets API error (HTTP {status}): {e}") from e
             except Exception as e:
                 raise SheetsLoadError(f"Unexpected error loading sheet: {e}") from e
 

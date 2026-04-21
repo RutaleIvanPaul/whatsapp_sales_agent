@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
             loader = GoogleSheetsLoader(
                 cfg.google_credentials_json_b64,
                 op.google_sheets_id or cfg.google_sheets_id,
-                cfg.google_sheet_name,
+                op.google_sheet_name,
             )
             cache = InventoryCache(search_threshold=cfg.search_threshold)
             try:

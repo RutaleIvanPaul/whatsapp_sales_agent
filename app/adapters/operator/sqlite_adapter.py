@@ -119,4 +119,5 @@ class SqliteOperatorAdapter(OperatorAdapter):
         # Backward compat: existing DB rows may not have these fields
         d.setdefault("excluded_phones", [])
         d.setdefault("included_phones", [])
+        d.setdefault("google_sheet_name", "Sheet1")
         return Operator(**d)

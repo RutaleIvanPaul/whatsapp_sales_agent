@@ -22,6 +22,7 @@ class Operator:
     whapi_webhook_secret: str
     whapi_connected_phone: str | None
     google_sheets_id: str
+    google_sheet_name: str
     luganda_canned_response: str
     llm_model: str
     status: OperatorStatus

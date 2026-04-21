@@ -49,6 +49,7 @@ def main():
     owner_name = input("Owner name: ").strip()
     owner_phone_raw = input("Owner personal WhatsApp number (e.g. +256...): ").strip()
     sheets_id = input("Google Sheets ID: ").strip()
+    sheet_name = input("Sheet tab name [Sheet1]: ").strip() or "Sheet1"
     luganda_default = "Webale okutuukirira! Nnyinza okuyamba oluvannyuma."
     luganda = input(f"Luganda canned response [{luganda_default}]: ").strip()
     if not luganda:
@@ -174,6 +175,7 @@ def main():
         whapi_webhook_secret=webhook_secret,
         whapi_connected_phone=None,
         google_sheets_id=sheets_id,
+        google_sheet_name=sheet_name,
         luganda_canned_response=luganda,
         llm_model=cfg.llm_model,
         status=OperatorStatus.ACTIVE,
@@ -192,7 +194,7 @@ def main():
             loader = GoogleSheetsLoader(
                 cfg.google_credentials_json_b64,
                 sheets_id,
-                cfg.google_sheet_name,
+                sheet_name,
             )
             products = asyncio.run(loader.load())
             product_count = len(products)
@@ -204,19 +206,11 @@ def main():
             else:
                 print(f"  Loaded {product_count} products")
         except SheetsLoadError as e:
-            # Get service account email for helpful error message
-            try:
-                import base64
-                creds = json.loads(base64.b64decode(cfg.google_credentials_json_b64))
-                email = creds.get("client_email", "unknown")
-            except Exception:
-                email = "the service account"
-
             print(
-                f"\n  Could not load inventory. Check that the sheet is shared "
-                f"with {email} as Viewer.\n"
-                f"  Sheet ID used: {sheets_id}\n"
-                f"  Error: {str(e)[:200]}",
+                f"\n  Could not load inventory.\n"
+                f"  {str(e)}\n"
+                f"  Sheet ID: {sheets_id}\n"
+                f"  Tab name: {sheet_name}",
                 file=sys.stderr,
             )
             # Clean up — all or nothing

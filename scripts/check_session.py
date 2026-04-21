@@ -147,6 +147,7 @@ def main():
             whapi_webhook_secret="secret-webhook-abc",
             whapi_connected_phone="+256700111111",
             google_sheets_id="sheet-id-123",
+            google_sheet_name="Sheet1",
             luganda_canned_response="Webale okutuukirira!",
             llm_model="claude-sonnet-4-6",
             status=OperatorStatus.ACTIVE,
@@ -237,6 +238,7 @@ def create_test_operator():
         whapi_webhook_secret=webhook_secret,
         whapi_connected_phone=None,
         google_sheets_id=os.getenv("GOOGLE_SHEETS_ID", ""),
+        google_sheet_name=os.getenv("GOOGLE_SHEET_NAME", "Sheet1"),
         luganda_canned_response=(
             "Webale okutuukirira! Nnyinza okuyamba oluvannyuma."
         ),
