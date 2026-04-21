@@ -92,6 +92,11 @@ async def run(
     today = datetime.utcnow().strftime("%Y-%m-%d")
     cap_key = (operator.operator_id, sender_phone, today)
     async with _get_cap_lock():
+        # Purge stale date keys (prevents unbounded growth)
+        stale = [k for k in _daily_counts if k[2] != today]
+        for k in stale:
+            _daily_counts.pop(k, None)
+            _daily_alerted.discard(k)
         count = _daily_counts.get(cap_key, 0) + 1
         _daily_counts[cap_key] = count
     if count > max_messages_per_user_day:

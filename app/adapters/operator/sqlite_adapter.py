@@ -7,6 +7,7 @@ from datetime import datetime
 from app.adapters.operator.base import OperatorAdapter
 from app.models.operator import Operator, OperatorStatus
 from app.utils.crypto import decrypt, encrypt
+from app.utils.log import log
 
 
 class SqliteOperatorAdapter(OperatorAdapter):
@@ -32,13 +33,34 @@ class SqliteOperatorAdapter(OperatorAdapter):
         ).fetchone()
         if row is None:
             return None
-        return self._deserialise(json.loads(row[0]))
+        try:
+            return self._deserialise(json.loads(row[0]))
+        except Exception as e:
+            log(
+                "error",
+                component="operator_storage",
+                error_type="corrupt_operator",
+                message=type(e).__name__,
+                channel_id=channel_id,
+            )
+            return None
 
     def get_all_active(self) -> list[Operator]:
         rows = self._conn.execute(
             "SELECT data FROM operators WHERE status=?", (OperatorStatus.ACTIVE.value,)
         ).fetchall()
-        return [self._deserialise(json.loads(r[0])) for r in rows]
+        results = []
+        for r in rows:
+            try:
+                results.append(self._deserialise(json.loads(r[0])))
+            except Exception as e:
+                log(
+                    "error",
+                    component="operator_storage",
+                    error_type="corrupt_operator_skipped",
+                    message=type(e).__name__,
+                )
+        return results
 
     def update_status(self, operator_id: str, status: OperatorStatus) -> None:
         self._conn.execute(

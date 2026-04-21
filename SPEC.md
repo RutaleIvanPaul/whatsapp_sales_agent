@@ -1013,14 +1013,14 @@ Stale session (>7 days)               | LLM told N days elapsed, re-establishes 
 Message deleted pre-flush             | Remove from buffer if present
 Message deleted post-flush            | Log and ignore, cannot undo
 Burst > 10 messages                   | Force-flush at 10, rate limit 8s after
-User hits daily message cap           | Polite cutoff message, resumes next day
-LLM timeout (>30s)                    | Fallback message to customer, log timeout
-LLM tool loop > 5 rounds              | Log warning, use last text response or fallback
+User hits daily message cap           | Silent (no reply), single operator alert, resets midnight UTC
+LLM timeout (>30s)                    | 3-attempt retry (simplified on 3rd), then silence + HANDED_OFF + alert
+LLM tool loop > 5 rounds              | Use last text if available, else silence + HANDED_OFF + alert
 Prompt injection attempt              | Delimiters in system prompt, LLM instructed
 False positive handoff                | Operator ignores or types "handled"
-Holding message spam                  | Max once per hour per customer
-24h owner inactivity                  | Reverts to CONSIDERING on next customer message
-Resume context window timeout         | Bot resumes automatically after 10 minutes
+Bot during HANDED_OFF                 | Continues responding normally (DECISIONS #18)
+Operator takeover                     | Only from_me:true → OWNER_ACTIVE suppresses bot
+Resume after interruption             | Operator types resume/handled in control thread
 Send failure after 3 retries          | Log error, alert operator, stop
 Whapi session disconnect              | users.delete webhook, operator alerted, bot stops
 Inventory refresh failure             | Serve stale cache, log warning, continue

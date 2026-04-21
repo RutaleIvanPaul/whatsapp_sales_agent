@@ -528,3 +528,37 @@ dashboard is purpose-built for this. The script focuses on what only
 the system can do: webhook configuration, encryption, DB writes.
 
 **Date:** Phase 6 (April 2026)
+
+---
+
+## 24. Phase 6 hardening — crash protection + memory cleanup
+
+**Decision:** Added try/except around all JSON deserialization in storage
+and operator adapters. Corrupt DB rows return None (sessions) or are
+skipped (get_by_stage, get_all_active) instead of crashing the server.
+
+**Why:** A single corrupted JSON row in SQLite would crash the entire
+server process — affecting ALL operators, not just the one with bad data.
+Returning None for a corrupt session means the pipeline creates a fresh
+session (losing history, but the customer can still chat). Skipping
+corrupt operators in get_all_active means the server starts with N-1
+operators instead of crashing.
+
+**Additional fixes:**
+- Message deletion events (Whapi event=delete) now routed to
+  buffer.handle_deletion() instead of being processed as regular messages
+- Daily counts dict purges stale date keys on each access (prevents
+  unbounded growth)
+- Contacts cache preserves stale data on partial load failure (HTTP error
+  mid-pagination) instead of replacing with incomplete set
+- Config validation output uses structured logger instead of print()
+
+**Known accepted risks (not fixed, documented):**
+- _session_locks, _operator_refs, _last_flush dicts grow unbounded with
+  unique customer count. At MVP scale (<10K customers) this is ~100KB.
+  Monitor in production; add periodic cleanup if needed.
+- Operator deleted from DB while server running: in-memory cache stale
+  until restart. Acceptable for MVP (operators rarely deleted).
+- Queue lost on process restart. Documented in S24. Redis swap planned.
+
+**Date:** Phase 6 hardening (April 2026)
