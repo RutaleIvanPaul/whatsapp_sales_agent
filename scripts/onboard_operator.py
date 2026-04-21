@@ -48,8 +48,9 @@ def main():
     shop_name = input("Shop name: ").strip()
     owner_name = input("Owner name: ").strip()
     owner_phone_raw = input("Owner personal WhatsApp number (e.g. +256...): ").strip()
-    sheets_id = input("Google Sheets ID: ").strip()
-    sheet_name = input("Sheet tab name [Sheet1]: ").strip() or "Sheet1"
+    sheets_id = input("Google Sheets ID (from sheet URL): ").strip()
+    sheet_name_input = input("Sheet tab name [Sheet1]: ").strip()
+    sheet_name = sheet_name_input or "Sheet1"
     luganda_default = "Webale okutuukirira! Nnyinza okuyamba oluvannyuma."
     luganda = input(f"Luganda canned response [{luganda_default}]: ").strip()
     if not luganda:
@@ -74,6 +75,11 @@ def main():
 
     if not sheets_id:
         errors.append("Google Sheets ID is required")
+    elif len(sheets_id) < 20:
+        errors.append(
+            f"Google Sheets ID looks too short ({len(sheets_id)} chars). "
+            f"It should be the long string from your sheet URL between /d/ and /edit"
+        )
 
     if errors:
         print("\nErrors:", file=sys.stderr)
@@ -185,6 +191,49 @@ def main():
     print(f"  Operator {operator_id} created")
 
     # ── Load inventory ───────────────────────────────────────────────
+    # ── Validate sheet tab name ───────────────────────────────────────
+    print("\nVerifying Google Sheet access...")
+    if cfg.google_credentials_json_b64 and sheets_id:
+        try:
+            import base64 as _b64
+            creds_json = json.loads(_b64.b64decode(cfg.google_credentials_json_b64))
+            from google.oauth2.service_account import Credentials
+            from googleapiclient.discovery import build as gbuild
+            creds = Credentials.from_service_account_info(
+                creds_json,
+                scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+            )
+            service = gbuild("sheets", "v4", credentials=creds, cache_discovery=False)
+            meta = service.spreadsheets().get(spreadsheetId=sheets_id).execute()
+            available_tabs = [s["properties"]["title"] for s in meta.get("sheets", [])]
+            if sheet_name not in available_tabs:
+                print(
+                    f"\n  Tab '{sheet_name}' not found in the sheet.",
+                    file=sys.stderr,
+                )
+                print(f"  Available tabs: {', '.join(available_tabs)}", file=sys.stderr)
+                print(
+                    f"  Note: tab names are case-sensitive.",
+                    file=sys.stderr,
+                )
+                # Offer to pick the right one
+                if len(available_tabs) == 1:
+                    sheet_name = available_tabs[0]
+                    print(f"  Using '{sheet_name}' (only tab available).")
+                else:
+                    # Clean up the operator record before exiting
+                    op_adapter._conn.execute(
+                        "DELETE FROM operators WHERE operator_id=?", (operator_id,)
+                    )
+                    op_adapter._conn.commit()
+                    raise SystemExit(1)
+            else:
+                print(f"  Sheet tab '{sheet_name}' found.")
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"  Warning: could not verify tab name ({type(e).__name__}). Continuing...")
+
     print("\nLoading inventory from Google Sheet...")
     if not cfg.google_credentials_json_b64:
         print("  Warning: GOOGLE_CREDENTIALS_JSON not set. Skipping inventory load.")

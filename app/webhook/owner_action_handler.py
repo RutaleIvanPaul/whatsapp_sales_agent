@@ -65,6 +65,15 @@ async def _handle_control_command(
 
     if text.startswith("resume"):
         target_phone = _parse_phone_arg(text, "resume")
+        if target_phone == _INVALID_PHONE:
+            raw = text[len("resume"):].strip()
+            await messaging.send_text(
+                operator.owner_personal_phone,
+                f"'{raw}' doesn't look like a valid phone number. "
+                f"Use the full number with country code, e.g. resume +256700123456",
+                operator,
+            )
+            return
         session = await _resolve_handoff(
             operator, storage, messaging, target_phone
         )
@@ -92,6 +101,15 @@ async def _handle_control_command(
 
     elif text.startswith("handled"):
         target_phone = _parse_phone_arg(text, "handled")
+        if target_phone == _INVALID_PHONE:
+            raw = text[len("handled"):].strip()
+            await messaging.send_text(
+                operator.owner_personal_phone,
+                f"'{raw}' doesn't look like a valid phone number. "
+                f"Use the full number with country code, e.g. handled +256700123456",
+                operator,
+            )
+            return
         session = await _resolve_handoff(
             operator, storage, messaging, target_phone
         )
@@ -159,6 +177,15 @@ async def _cmd_exclude(
     operator_adapter: OperatorAdapter | None,
 ) -> None:
     phone = _parse_phone_arg(text, "exclude")
+    if phone == _INVALID_PHONE:
+        raw = text[len("exclude"):].strip()
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"'{raw}' doesn't look like a valid phone number. "
+            f"Use the full number with country code, e.g. exclude +256700123456",
+            operator,
+        )
+        return
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: exclude {phone}", operator)
         return
@@ -182,6 +209,15 @@ async def _cmd_include(
     operator_adapter: OperatorAdapter | None,
 ) -> None:
     phone = _parse_phone_arg(text, "include")
+    if phone == _INVALID_PHONE:
+        raw = text[len("include"):].strip()
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"'{raw}' doesn't look like a valid phone number. "
+            f"Use the full number with country code, e.g. include +256700123456",
+            operator,
+        )
+        return
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: include {phone}", operator)
         return
@@ -205,6 +241,15 @@ async def _cmd_remove(
     operator_adapter: OperatorAdapter | None,
 ) -> None:
     phone = _parse_phone_arg(text, "remove")
+    if phone == _INVALID_PHONE:
+        raw = text[len("remove"):].strip()
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"'{raw}' doesn't look like a valid phone number. "
+            f"Use the full number with country code, e.g. remove +256700123456",
+            operator,
+        )
+        return
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: remove {phone}", operator)
         return
@@ -321,12 +366,16 @@ async def _resolve_handoff(
     return None
 
 
+_INVALID_PHONE = "__INVALID__"
+
+
 def _parse_phone_arg(text: str, command: str) -> str | None:
     """Extract the optional phone argument after a command word.
 
     'resume +256700123456' → '+256700123456'
     'resume 256700123456'  → '+256700123456'
     'resume'               → None
+    'resume abc'            → _INVALID_PHONE sentinel
     """
     rest = text[len(command) :].strip()
     if not rest:
@@ -334,4 +383,4 @@ def _parse_phone_arg(text: str, command: str) -> str | None:
     try:
         return normalise(rest if rest.startswith("+") else "+" + rest)
     except ValueError:
-        return None
+        return _INVALID_PHONE
