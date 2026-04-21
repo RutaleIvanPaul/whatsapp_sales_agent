@@ -58,10 +58,31 @@ def main():
 
     # ── Validate inputs ──────────────────────────────────────────────
     errors = []
+
+    # Channel ID: must be non-empty, alphanumeric + hyphens, reasonable length
     if not channel_id:
         errors.append("Channel ID is required")
+    elif not all(c.isalnum() or c in "-_" for c in channel_id):
+        errors.append(
+            f"Channel ID '{channel_id}' contains invalid characters. "
+            f"It should be alphanumeric with hyphens (e.g. GROOTT-F552A). "
+            f"Copy it exactly from the Whapi dashboard."
+        )
+    elif len(channel_id) < 5:
+        errors.append(
+            f"Channel ID '{channel_id}' looks too short. "
+            f"Copy the full channel ID from the Whapi dashboard."
+        )
+
+    # Channel token: must be non-empty, reasonable length
     if not channel_token:
         errors.append("Channel token is required")
+    elif len(channel_token) < 10:
+        errors.append(
+            f"Channel token looks too short ({len(channel_token)} chars). "
+            f"Copy the full token from the Whapi dashboard."
+        )
+
     if not shop_name:
         errors.append("Shop name is required")
     if not owner_name:
@@ -70,7 +91,18 @@ def main():
     try:
         owner_phone = normalise(owner_phone_raw)
     except ValueError:
-        errors.append(f"Invalid phone number: {owner_phone_raw!r}")
+        if not owner_phone_raw:
+            errors.append("Owner phone number is required")
+        elif not owner_phone_raw.startswith("+") and not owner_phone_raw.startswith("00"):
+            errors.append(
+                f"Phone number '{owner_phone_raw}' must include a country code "
+                f"(e.g. +256700123456, not 0700123456)"
+            )
+        else:
+            errors.append(
+                f"'{owner_phone_raw}' doesn't look like a valid phone number. "
+                f"Use the full number with country code, e.g. +256700123456"
+            )
         owner_phone = ""
 
     if not sheets_id:
@@ -79,6 +111,11 @@ def main():
         errors.append(
             f"Google Sheets ID looks too short ({len(sheets_id)} chars). "
             f"It should be the long string from your sheet URL between /d/ and /edit"
+        )
+    elif " " in sheets_id or "\t" in sheets_id:
+        errors.append(
+            f"Google Sheets ID contains whitespace. "
+            f"Copy the ID directly from the sheet URL — no spaces."
         )
 
     if errors:
@@ -97,20 +134,75 @@ def main():
             f"https://gate.whapi.cloud/health?token={channel_token}",
             timeout=10,
         )
-        data = resp.json()
-        status_code = data.get("status", {}).get("code")
-        if status_code != 4:
+
+        # Handle HTTP-level errors first (wrong token, bad request, etc.)
+        if resp.status_code == 401 or resp.status_code == 403:
             print(
-                "\nChannel is not connected. Make sure the operator has "
-                "scanned the QR code in the Whapi dashboard before running "
-                "this script.",
+                "\nInvalid channel token. The token was rejected by Whapi.",
                 file=sys.stderr,
             )
-            print(f"Health status: {data.get('status', {})}", file=sys.stderr)
+            print(
+                "Check that you copied the full token from the Whapi dashboard "
+                "(Settings → API → Token).",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
-        print(f"  Channel connected: {data.get('user', {}).get('name', '?')}")
+        if resp.status_code == 404:
+            print(
+                "\nChannel not found on Whapi. Check the channel token is correct.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        if resp.status_code >= 400:
+            print(
+                f"\nWhapi returned HTTP {resp.status_code}: {resp.text[:200]}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        # Parse JSON response
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            print(
+                f"\nUnexpected response from Whapi (not valid JSON). "
+                f"Response: {resp.text[:200]}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        status_code = data.get("status", {}).get("code")
+        status_text = data.get("status", {}).get("text", "unknown")
+
+        if status_code != 4:
+            print(
+                f"\nChannel is not connected (status: {status_text}).",
+                file=sys.stderr,
+            )
+            print(
+                "Make sure the operator has scanned the QR code in the "
+                "Whapi dashboard and their WhatsApp shows 'Linked Devices'.",
+                file=sys.stderr,
+            )
+            if status_code == 1:
+                print("  Hint: channel is starting up — wait a moment and try again.", file=sys.stderr)
+            elif status_code == 2:
+                print("  Hint: QR code is waiting to be scanned.", file=sys.stderr)
+            elif status_code == 3:
+                print("  Hint: channel is loading — wait a moment and try again.", file=sys.stderr)
+            raise SystemExit(1)
+
+        whapi_user = data.get("user", {}).get("name", "?")
+        whapi_phone = data.get("user", {}).get("phone", "?")
+        print(f"  Channel connected: {whapi_user} ({whapi_phone})")
+    except SystemExit:
+        raise
     except httpx.RequestError as e:
-        print(f"\nCould not reach Whapi: {e}", file=sys.stderr)
+        print(
+            f"\nCould not reach Whapi ({type(e).__name__}). "
+            f"Check your internet connection.",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
     # ── Configure webhook ────────────────────────────────────────────
@@ -123,6 +215,21 @@ def main():
         if not server_url:
             print("Server URL is required for webhook configuration", file=sys.stderr)
             raise SystemExit(1)
+        if not server_url.startswith("https://"):
+            if server_url.startswith("http://"):
+                print(
+                    "\nWarning: Server URL uses http:// — Whapi requires https:// "
+                    "for webhook delivery. Use an ngrok or similar HTTPS tunnel.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            else:
+                print(
+                    f"\nServer URL '{server_url}' must start with https:// "
+                    f"(e.g. https://your-domain.ngrok.io)",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
 
         webhook_url = f"{server_url.rstrip('/')}/webhook"
         print(f"\nConfiguring webhook → {webhook_url}")
@@ -147,12 +254,40 @@ def main():
                 },
                 timeout=15,
             )
+            if resp.status_code == 401 or resp.status_code == 403:
+                print(
+                    "\nWebhook configuration failed: channel token was rejected.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            if resp.status_code == 400:
+                print(
+                    f"\nWebhook configuration rejected by Whapi (bad request).\n"
+                    f"  Response: {resp.text[:300]}",
+                    file=sys.stderr,
+                )
+                if "url" in resp.text.lower():
+                    print(
+                        f"  Hint: check your server URL is a valid HTTPS address.",
+                        file=sys.stderr,
+                    )
+                raise SystemExit(1)
             if resp.status_code >= 400:
-                print(f"\nFailed to configure webhook: {resp.text[:200]}", file=sys.stderr)
+                print(
+                    f"\nWebhook configuration failed (HTTP {resp.status_code}).\n"
+                    f"  Response: {resp.text[:300]}",
+                    file=sys.stderr,
+                )
                 raise SystemExit(1)
             print("  Webhook configured")
+        except SystemExit:
+            raise
         except httpx.RequestError as e:
-            print(f"\nCould not configure webhook: {e}", file=sys.stderr)
+            print(
+                f"\nCould not reach Whapi to configure webhook ({type(e).__name__}). "
+                f"Check your internet connection.",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
     else:
         print("\nSkipping webhook configuration (--skip-webhook)")
@@ -199,6 +334,7 @@ def main():
             creds_json = json.loads(_b64.b64decode(cfg.google_credentials_json_b64))
             from google.oauth2.service_account import Credentials
             from googleapiclient.discovery import build as gbuild
+            from googleapiclient.errors import HttpError as _HttpError
             creds = Credentials.from_service_account_info(
                 creds_json,
                 scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
@@ -220,6 +356,9 @@ def main():
                 if len(available_tabs) == 1:
                     sheet_name = available_tabs[0]
                     print(f"  Using '{sheet_name}' (only tab available).")
+                    # Update operator record with corrected tab name
+                    operator.google_sheet_name = sheet_name
+                    op_adapter.save(operator)
                 else:
                     # Clean up the operator record before exiting
                     op_adapter._conn.execute(
@@ -231,8 +370,35 @@ def main():
                 print(f"  Sheet tab '{sheet_name}' found.")
         except SystemExit:
             raise
+        except _HttpError as e:
+            status = e.resp.status if e.resp else 0
+            if status == 403:
+                print(
+                    f"\n  Permission denied for Google Sheet.\n"
+                    f"  The sheet must be shared with the service account as Viewer.\n"
+                    f"  Service account email is in your GOOGLE_CREDENTIALS_JSON.",
+                    file=sys.stderr,
+                )
+            elif status == 404:
+                print(
+                    f"\n  Google Sheet not found (ID: {sheets_id}).\n"
+                    f"  Check the Sheet ID — it's the long string from the "
+                    f"sheet URL between /d/ and /edit.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"\n  Google Sheets API error (HTTP {status}): {str(e)[:200]}",
+                    file=sys.stderr,
+                )
+            op_adapter._conn.execute(
+                "DELETE FROM operators WHERE operator_id=?", (operator_id,)
+            )
+            op_adapter._conn.commit()
+            print("  Operator record removed.", file=sys.stderr)
+            raise SystemExit(1)
         except Exception as e:
-            print(f"  Warning: could not verify tab name ({type(e).__name__}). Continuing...")
+            print(f"  Warning: could not verify sheet access ({type(e).__name__}: {e}). Continuing...")
 
     print("\nLoading inventory from Google Sheet...")
     if not cfg.google_credentials_json_b64:
