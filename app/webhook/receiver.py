@@ -108,6 +108,24 @@ async def receive(request: Request) -> Response:
         if event_type != "messages":
             return Response(status_code=200)
 
+        # Message deletion events — remove from buffer if present
+        if event_action == "delete":
+            for msg in payload.get("messages", []):
+                msg_id = msg.get("id", "")
+                if msg_id and hasattr(state, "buffer"):
+                    # Extract phone from chat_id for buffer key
+                    chat_id = msg.get("chat_id", "")
+                    if chat_id and not chat_id.endswith("@g.us"):
+                        raw = chat_id.split("@")[0]
+                        try:
+                            phone = from_whapi(raw)
+                            state.buffer.handle_deletion(
+                                operator.operator_id, phone, msg_id
+                            )
+                        except ValueError:
+                            pass
+            return Response(status_code=200)
+
         # Step 7+: iterate messages and filter
         for msg in payload.get("messages", []):
             msg_id = msg.get("id", "")

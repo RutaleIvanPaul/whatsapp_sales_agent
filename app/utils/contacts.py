@@ -35,6 +35,7 @@ class ContactsCache:
             phones: set[str] = set()
             page_size = 500
             offset = 0
+            load_complete = True
 
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 while True:
@@ -48,6 +49,7 @@ class ContactsCache:
                             message=f"http_{resp.status_code}",
                             operator_id=operator.operator_id,
                         )
+                        load_complete = False
                         break
 
                     data = resp.json()
@@ -65,12 +67,21 @@ class ContactsCache:
                         break  # last page
                     offset += page_size
 
-            self._contacts[operator.operator_id] = phones
-            log(
-                "contacts_loaded",
-                operator_id=operator.operator_id,
-                contact_count=len(phones),
-            )
+            if load_complete:
+                self._contacts[operator.operator_id] = phones
+                log(
+                    "contacts_loaded",
+                    operator_id=operator.operator_id,
+                    contact_count=len(phones),
+                )
+            else:
+                # Keep stale cache if it exists — better than partial data
+                log(
+                    "contacts_load_partial",
+                    operator_id=operator.operator_id,
+                    reason="http_error_during_pagination",
+                    stale_count=len(self._contacts.get(operator.operator_id, set())),
+                )
         except Exception as e:
             log(
                 "error",

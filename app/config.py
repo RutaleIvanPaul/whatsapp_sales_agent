@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
+from app.utils.log import log as structured_log
 
 
 @dataclass(frozen=True)
@@ -165,12 +166,14 @@ def validate() -> Config:
     def _mask(s: str) -> str:
         return s[:4] + "***" if len(s) > 4 else "***"
 
-    print("Config OK:")
-    print(f"  STORAGE_URL: {storage_url}")
-    print(f"  LLM_PROVIDER: {llm_provider}")
-    print(f"  LLM_MODEL: {llm_model}")
-    print(f"  LLM_API_KEY: {_mask(llm_api_key)}")
-    print(f"  ENCRYPTION_KEY: {_mask(encryption_key_b64)}")
+    structured_log(
+        "config_validated",
+        storage_url=storage_url,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_api_key=_mask(llm_api_key),
+        encryption_key=_mask(encryption_key_b64),
+    )
 
     return Config(
         encryption_key=encryption_key,

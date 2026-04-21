@@ -6,6 +6,7 @@ from datetime import datetime
 
 from app.adapters.storage.base import StorageAdapter
 from app.models.session import Session, Stage
+from app.utils.log import log
 
 
 class SqliteStorageAdapter(StorageAdapter):
@@ -29,7 +30,17 @@ class SqliteStorageAdapter(StorageAdapter):
         ).fetchone()
         if row is None:
             return None
-        return _deserialise_session(json.loads(row[0]))
+        try:
+            return _deserialise_session(json.loads(row[0]))
+        except Exception as e:
+            log(
+                "error",
+                component="storage",
+                error_type="corrupt_session",
+                message=type(e).__name__,
+                operator_id=operator_id,
+            )
+            return None
 
     def set(self, operator_id: str, phone: str, session: Session) -> None:
         now = datetime.utcnow().isoformat()
@@ -54,9 +65,18 @@ class SqliteStorageAdapter(StorageAdapter):
         ).fetchall()
         results = []
         for row in rows:
-            session = _deserialise_session(json.loads(row[0]))
-            if session.stage.value == stage:
-                results.append(session)
+            try:
+                session = _deserialise_session(json.loads(row[0]))
+                if session.stage.value == stage:
+                    results.append(session)
+            except Exception as e:
+                log(
+                    "error",
+                    component="storage",
+                    error_type="corrupt_session_skipped",
+                    message=type(e).__name__,
+                    operator_id=operator_id,
+                )
         return results
 
 
