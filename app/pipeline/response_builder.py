@@ -40,7 +40,7 @@ async def send_response(
     for product in mentioned[:MAX_PRODUCT_IMAGES]:
         if not product.image_url:
             continue
-        caption = f"{product.name}\n{product.price}\n{product.description}"
+        caption = _build_caption(product)
         asyncio.create_task(_send_image_safe(messaging, phone, product, caption, operator))
 
 
@@ -61,6 +61,16 @@ async def _send_image_safe(
             error_type="image_send_failed",
             product_id=product.id,
         )
+
+
+def _build_caption(product: Product) -> str:
+    """Build a rich image caption with all product details."""
+    lines = [f"*{product.name}*", product.price]
+    if product.description:
+        lines.append(product.description)
+    if product.attributes:
+        lines.append(product.attributes)
+    return "\n".join(lines)
 
 
 def _filter_mentioned(products: list[Product], reply_text: str) -> list[Product]:
