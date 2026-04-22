@@ -211,9 +211,13 @@ def main():
     if not skip_webhook:
         server_url = cfg.server_url or os.getenv("SERVER_URL", "")
         if not server_url:
-            server_url = input("Server URL (e.g. https://your-domain.com): ").strip()
-        if not server_url:
-            print("Server URL is required for webhook configuration", file=sys.stderr)
+            print(
+                "\nSERVER_URL is not set in your .env file.\n"
+                "  This is a deployment-level setting — not per-operator.\n"
+                "  Add to .env: SERVER_URL=https://your-domain.com\n"
+                "  Or pass --skip-webhook to configure the webhook manually later.",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
         if not server_url.startswith("https://"):
             if server_url.startswith("http://"):
