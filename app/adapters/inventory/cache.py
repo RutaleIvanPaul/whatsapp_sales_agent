@@ -31,15 +31,21 @@ class InventoryCache(InventoryAdapter):
         if not query:
             return []
 
-        # Build candidate queries: the full query plus progressively shorter
-        # sub-queries (bigrams of the words). Long vision descriptions produce
-        # verbose queries that score low on partial_ratio; shorter fragments
-        # match much better against index strings.
+        # Build candidate queries: the full query, bigrams, and individual
+        # words. Long vision descriptions produce verbose queries that score
+        # low on partial_ratio; shorter fragments match better. Individual
+        # words catch cases like "phone cases" → "case" matching products
+        # named by brand ("Tecno Spark 20 Case") where the full phrase
+        # scores low.
         words = query.lower().split()
         sub_queries = [query.lower()]
         if len(words) >= 3:
             for i in range(len(words) - 1):
                 sub_queries.append(f"{words[i]} {words[i + 1]}")
+        if len(words) >= 2:
+            for w in words:
+                if len(w) >= 3:  # skip tiny words like "a", "of"
+                    sub_queries.append(w)
 
         shown_set = set(shown_ids)
         candidates: dict[str, tuple[float, Product]] = {}
