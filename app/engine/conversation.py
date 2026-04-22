@@ -289,10 +289,14 @@ async def _dispatch_tool(
         result_str, products = tools_mod.handle_search_products(
             args.get("query", ""), session, inventory
         )
-        # Track products for response_builder (max 3 shown to customer)
-        for p in products:
-            if p.id not in [x.id for x in products_shown_this_turn]:
-                products_shown_this_turn.append(p)
+        # Only keep products from the MOST RECENT search call.
+        # If the LLM tried a broad search first and narrowed down, the
+        # broader results would otherwise leak into images (e.g. "shirt"
+        # search returning men's items that shouldn't appear when the
+        # final search is "yellow dress"). The last search represents
+        # what the LLM concluded is relevant.
+        products_shown_this_turn.clear()
+        products_shown_this_turn.extend(products)
         return result_str
 
     if name == "update_session":
