@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI
 
 from app.adapters.inventory.cache import InventoryCache
@@ -20,8 +19,8 @@ from app.pipeline import runner as pipeline_runner
 from app.queue.queue import init_queue
 from app.queue.worker import QueueWorker
 from app.utils.contacts import ContactsCache
+from app.adapters.messaging.base import MessagingAdapter
 from app.utils.cost_tracker import CostTracker, set_tracker
-from app.utils.crypto import decrypt
 from app.utils.log import log
 from app.webhook import session_disconnect_handler
 from app.webhook.receiver import router as webhook_router
@@ -39,33 +38,22 @@ def _spawn(coro) -> asyncio.Task:
 
 async def _health_monitor(
     operators: list[Operator],
-    encryption_key: bytes,
     operator_adapter,
-    messaging_adapter,
+    messaging_adapter: MessagingAdapter,
     interval_s: int,
 ) -> None:
-    """Background task: periodically check Whapi session health per operator."""
+    """Background task: periodically check provider session health per operator."""
     while True:
         await asyncio.sleep(interval_s)
         for op in operators:
             try:
-                token = decrypt(op.whapi_channel_token, encryption_key)
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(
-                        f"https://gate.whapi.cloud/health?token={token}"
-                    )
-                    data = resp.json()
-                    status_info = data.get("status", {})
-                    # Whapi status codes: 4 = AUTH (connected), others = not connected.
-                    # The "text" field varies ("AUTH", "CONNECTED", etc.) so check
-                    # the code. A missing code or code != 4 means not connected.
-                    status_code = status_info.get("code")
-                    if status_code != 4:
-                        if op.status != OperatorStatus.DISCONNECTED:
-                            await session_disconnect_handler.handle_disconnect(
-                                op, op.whapi_channel_id,
-                                operator_adapter, messaging_adapter,
-                            )
+                health = await messaging_adapter.check_health(op)
+                if not health["connected"]:
+                    if op.status != OperatorStatus.DISCONNECTED:
+                        await session_disconnect_handler.handle_disconnect(
+                            op, op.whapi_channel_id,
+                            operator_adapter, messaging_adapter,
+                        )
             except Exception as e:
                 log(
                     "error",
@@ -162,7 +150,7 @@ async def lifespan(app: FastAPI):
     )
 
     # --- Step 6: contacts cache + hourly refresh ---
-    contacts_cache = ContactsCache(cfg.encryption_key)
+    contacts_cache = ContactsCache(messaging_adapter)
     for op in operators:
         await contacts_cache.load_for_operator(op)
     _spawn(contacts_cache.start_refresh(operators, interval_s=3600))
@@ -209,7 +197,7 @@ async def lifespan(app: FastAPI):
 
     # --- Step 8: health monitor (Phase 5) ---
     _spawn(_health_monitor(
-        operators, cfg.encryption_key, operator_adapter, messaging_adapter,
+        operators, operator_adapter, messaging_adapter,
         cfg.whapi_health_check_interval_s,
     ))
     log("startup", phase="health_monitor_started",
