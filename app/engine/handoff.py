@@ -43,24 +43,30 @@ async def trigger(
     storage.set(operator.operator_id, session.phone, session)
 
     # 4. Build alert context
-    last_product_line = "none shown yet"
+    products_shown_line = "none shown yet"
     if session.shown_product_ids:
         by_id = {p.id: p for p in inventory.get_all()}
-        last_id = session.shown_product_ids[-1]
-        product = by_id.get(last_id)
-        if product:
-            last_product_line = f"{product.name} — {product.price}"
+        shown = []
+        for pid in session.shown_product_ids:
+            product = by_id.get(pid)
+            if product:
+                shown.append(f"{product.name} — {product.price}")
+        if shown:
+            products_shown_line = "\n  ".join(shown)
 
     customer_name = session.name or "Unknown"
-    intent = session.intent or "not specified"
-    snippet = (triggering_message or "")[:120]
+    snippet = (triggering_message or "")[:200]
+
+    # The summary from the LLM is the best description of what happened,
+    # especially when session.intent wasn't populated via update_session.
+    summary_line = summary or session.intent or "not specified"
 
     alert = (
         f"New sale opportunity:\n"
         f"\n"
         f"Customer: {customer_name}\n"
-        f"Looking for: {intent}\n"
-        f"Last product shown: {last_product_line}\n"
+        f"Summary: {summary_line}\n"
+        f"Products shown:\n  {products_shown_line}\n"
         f'They said: "{snippet}"\n'
         f"\n"
         f"To respond, open your shop's WhatsApp and find "

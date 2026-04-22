@@ -73,8 +73,10 @@ TRIGGER_HANDOFF_SCHEMA = {
             "summary": {
                 "type": "string",
                 "description": (
-                    "Plain-English brief for the operator: what the customer "
-                    "wants, what was shown, what they said."
+                    "Plain-English brief for the shop owner: what specific "
+                    "product the customer wants, the price, and any details "
+                    "they mentioned (size, colour, quantity). Be specific — "
+                    "e.g. 'Wants the Samsung Watch Charger at 35,000 UGX'."
                 ),
             }
         },
