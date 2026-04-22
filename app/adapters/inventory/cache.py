@@ -31,37 +31,45 @@ class InventoryCache(InventoryAdapter):
         if not query:
             return []
 
-        # Build candidate queries: the full query, bigrams, and individual
-        # words. Long vision descriptions produce verbose queries that score
-        # low on partial_ratio; shorter fragments match better. Individual
-        # words catch cases like "phone cases" → "case" matching products
-        # named by brand ("Tecno Spark 20 Case") where the full phrase
-        # scores low.
-        words = query.lower().split()
-        sub_queries = [query.lower()]
-        if len(words) >= 3:
-            for i in range(len(words) - 1):
-                sub_queries.append(f"{words[i]} {words[i + 1]}")
-        if len(words) >= 2:
-            for w in words:
-                if len(w) >= 3:  # skip tiny words like "a", "of"
-                    sub_queries.append(w)
+        # Scoring strategy:
+        #   1. word_coverage = min(partial_ratio(w, index) for each query word)
+        #      A product qualifies only if EVERY significant query word matches
+        #      something. "yellow dress" on "Men's Dress Shirt" fails because
+        #      "yellow" doesn't match anything in that product.
+        #   2. full_score = partial_ratio(full_query, index) — fallback for
+        #      verbose queries (image descriptions) where word_coverage is
+        #      too strict.
+        #   A product passes if word_coverage >= threshold OR
+        #   full_score >= strong_threshold.
+        q_lower = query.lower()
+        words = [w for w in q_lower.split() if len(w) >= 3]
+        if not words:
+            words = q_lower.split()
 
+        strong_full_threshold = max(self._threshold + 10, 80)
         shown_set = set(shown_ids)
         candidates: dict[str, tuple[float, Product]] = {}
 
         with self._lock:
-            for sq in sub_queries:
-                for index_str, product in self._index:
-                    if not product.available:
-                        continue
-                    if product.id in shown_set:
-                        continue
-                    score = fuzz.partial_ratio(sq, index_str)
-                    if score >= self._threshold:
-                        existing = candidates.get(product.id)
-                        if existing is None or score > existing[0]:
-                            candidates[product.id] = (score, product)
+            for index_str, product in self._index:
+                if not product.available:
+                    continue
+                if product.id in shown_set:
+                    continue
+
+                full_score = fuzz.partial_ratio(q_lower, index_str)
+                if words:
+                    word_scores = [fuzz.partial_ratio(w, index_str) for w in words]
+                    word_coverage = min(word_scores)
+                else:
+                    word_coverage = full_score
+
+                passes_coverage = word_coverage >= self._threshold
+                passes_full = full_score >= strong_full_threshold
+                if passes_coverage or passes_full:
+                    # Rank by word_coverage primarily (more precise), full as fallback
+                    ranking_score = max(word_coverage, full_score if passes_full else 0)
+                    candidates[product.id] = (ranking_score, product)
 
         ranked = sorted(candidates.values(), key=lambda x: x[0], reverse=True)
         return [p for _, p in ranked[:5]]
