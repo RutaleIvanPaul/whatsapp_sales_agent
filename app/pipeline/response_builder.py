@@ -30,14 +30,11 @@ async def send_response(
         for chunk in _split_text(reply_text, MAX_TEXT_CHARS):
             await messaging.send_text(phone, chunk, operator)
 
-    # Only send images for products the LLM actually referenced in its text.
-    # The products list contains ALL search results, but the LLM may have
-    # chosen to show only a subset. Sending images for unmentioned products
-    # confuses the customer (e.g. Samsung images after iPhone text).
-    mentioned = _filter_mentioned(products, reply_text)
-
-    # Images fire-and-forget — don't block the pipeline timing
-    for product in mentioned[:MAX_PRODUCT_IMAGES]:
+    # Images fire-and-forget — don't block the pipeline timing.
+    # The LLM writes a short intro without naming products; the images with
+    # captions carry the full details. The LLM is responsible for issuing a
+    # narrow-enough search query so the top results are relevant.
+    for product in products[:MAX_PRODUCT_IMAGES]:
         if not product.image_url:
             continue
         caption = _build_caption(product)
@@ -71,33 +68,6 @@ def _build_caption(product: Product) -> str:
     if product.attributes:
         lines.append(product.attributes)
     return "\n".join(lines)
-
-
-def _filter_mentioned(products: list[Product], reply_text: str) -> list[Product]:
-    """Return only products the LLM actually referenced in its reply text.
-
-    Uses a word-overlap approach: a product is "mentioned" if enough of its
-    significant name words appear in the reply. This handles the common case
-    where the LLM rephrases slightly ("Lightning Cable" vs "Lightning Cable 1m").
-    """
-    if not reply_text:
-        return []
-
-    reply_lower = reply_text.lower()
-    # Words too common to be distinctive
-    stop_words = {"the", "a", "an", "and", "or", "for", "in", "of", "with", "to"}
-    mentioned = []
-
-    for p in products:
-        name_words = [w for w in p.name.lower().split() if w not in stop_words and len(w) >= 2]
-        if not name_words:
-            continue
-        matched = sum(1 for w in name_words if w in reply_lower)
-        # Require at least half the significant words to match
-        if matched >= max(1, len(name_words) // 2):
-            mentioned.append(p)
-
-    return mentioned
 
 
 def _split_text(text: str, limit: int) -> list[str]:
