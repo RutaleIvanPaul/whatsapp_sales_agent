@@ -239,3 +239,53 @@ The DB was wiped and re-onboarding is required because the Operator
 record now includes required `shop_category` and `shop_description`
 fields. Existing sessions also gain `intent_gate_state` with a
 backward-compatible default.
+
+---
+
+## Runtime operator registration (lazy-load)
+
+Files:
+- [app/operator_registry.py](app/operator_registry.py) (new)
+- [app/webhook/receiver.py](app/webhook/receiver.py)
+- [app/main.py](app/main.py)
+
+**Problem:** The startup hook bulk-loaded the `operators_by_channel_id`
+dict from SQLite. New operators onboarded while the server was running
+required a restart — the receiver's lookup returned `None` and
+silently 200'd every webhook. Unacceptable in production multi-tenant
+hosting.
+
+**Fix:** `ensure_registered(state, channel_id)` — called from the
+receiver in place of the raw dict lookup. On a dict miss:
+1. Takes a per-channel asyncio lock (prevents duplicate Sheets loads
+   on concurrent first webhooks).
+2. Queries SQLite via `operator_adapter.get_by_channel_id(channel_id)`.
+3. If found, initialises per-operator inventory cache (builds
+   RapidFuzz index from Google Sheets), loads contacts, spawns the
+   hourly refresh task, pins the operator in memory.
+4. Returns the Operator to the receiver which continues processing.
+
+Cached path (already-registered operator) is still a dict lookup —
+no latency penalty. First webhook from a brand-new operator pays a
+one-time ~5–15s Sheets load.
+
+`app.state.config` now exposed so the registry has what it needs.
+
+---
+
+## Prompt: no "let me share" without actually sharing
+
+File: [app/engine/system_prompt.py](app/engine/system_prompt.py)
+
+The LLM was saying "Sure, let me share a few options" even when
+nothing had been presented — e.g. customer pasted an image URL (link
+not in catalogue), or `present_products` was called with `[]`, or no
+search was issued. Customers got the intro with no images following.
+
+Prompt now explicitly branches the final reply by outcome:
+- **present_products called with ≥1 ids** → "Sure, let me share…" style intros are OK.
+- **empty present or no search** → must not say "let me share"; must
+  honestly say it's not in stock / not clear and ask a clarifying
+  question.
+- **link-not-in-catalogue** → don't blind-search; ask the customer
+  to describe what they want.
