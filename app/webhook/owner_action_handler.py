@@ -36,7 +36,7 @@ async def handle(
     is_from_me = msg.get("from_me", False)
 
     if is_from_me:
-        await _handle_passive_interruption(msg, operator, storage)
+        await _handle_passive_interruption(msg, operator, storage, messaging)
     else:
         await _handle_control_command(msg, operator, storage, messaging, operator_adapter)
 
@@ -283,6 +283,7 @@ async def _handle_passive_interruption(
     msg: dict,
     operator: Operator,
     storage: StorageAdapter,
+    messaging: MessagingAdapter | None = None,
 ) -> None:
     """Operator typed in a customer thread (from_me=true). Set OWNER_ACTIVE."""
     chat_id = msg.get("chat_id", "")
@@ -301,9 +302,23 @@ async def _handle_passive_interruption(
 
     # Bot-sent echoes are filtered in receiver.py via sent_tracker before
     # we reach here. If we're here, a human typed in the customer thread.
+    already_active = session.stage == Stage.OWNER_ACTIVE
     async with _lock_for(operator.operator_id, customer_phone):
         session.stage = Stage.OWNER_ACTIVE
         storage.set(operator.operator_id, customer_phone, session)
+
+    # Notify the owner on their control thread the first time they take
+    # over a given conversation. Don't re-notify on every message.
+    if messaging is not None and not already_active:
+        customer_label = session.name or customer_phone
+        note = (
+            f"Noted — you've taken over the chat with {customer_label}. "
+            f"I'll stay out of this one. Send 'resume {customer_phone}' "
+            f"here when you'd like me to pick it back up."
+        )
+        asyncio.create_task(
+            messaging.send_text(operator.owner_personal_phone, note, operator)
+        )
 
     log(
         "owner_typed_in_customer_thread",

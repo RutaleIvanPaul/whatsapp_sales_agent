@@ -124,9 +124,22 @@ async def run(
     t0 = _time.monotonic()
     lang = await language_mod.classify(unified, classifier_llm)
     language_ms = int((_time.monotonic() - t0) * 1000)
-    if lang in ("LUGANDA", "UNKNOWN"):
+    if lang == "LUGANDA":
+        # Legitimate non-English customer — reply with the operator's
+        # canned response and alert them.
         await _send_canned_and_alert(
             sender_phone, unified, lang, operator, messaging, phone_hash
+        )
+        return
+    if lang == "UNKNOWN":
+        # Gibberish / unidentifiable. Drop silently. We don't want to
+        # send the Luganda canned response to a keyboard-mashing
+        # message because it would imply we're processing real input.
+        log(
+            "pipeline_skipped",
+            reason="unknown_language",
+            phone_hash=phone_hash,
+            operator_id=operator.operator_id,
         )
         return
 
