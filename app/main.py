@@ -214,6 +214,9 @@ async def lifespan(app: FastAPI):
     app.state.message_queue = message_queue
     app.state.buffer = buffer
     app.state.cost_tracker = cost_tracker
+    # Config + the adapter-factories the registry needs for lazy-loading
+    # new operators onboarded after startup.
+    app.state.config = cfg
     log("startup", phase="ready", port=cfg.port)
 
     yield
