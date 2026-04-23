@@ -48,6 +48,16 @@ def main():
     shop_name = input("Shop name: ").strip()
     owner_name = input("Owner name: ").strip()
     owner_phone_raw = input("Owner personal WhatsApp number (e.g. +256...): ").strip()
+    shop_category = input(
+        "Shop category (e.g. 'Clothing & Fashion', 'Phone Accessories'): "
+    ).strip()
+    print(
+        "Shop description — 1-3 sentences about what you sell, target customers, "
+        "and how your product data is organised (gender/size tagging, categories, etc.).\n"
+        "  Example: 'Sells women's and men's casual and formal wear. "
+        "Products tagged by gender, size, colour.'"
+    )
+    shop_description = input("Shop description: ").strip()
     sheets_id = input("Google Sheets ID (from sheet URL): ").strip()
     sheet_name_input = input("Sheet tab name [Sheet1]: ").strip()
     sheet_name = sheet_name_input or "Sheet1"
@@ -87,6 +97,16 @@ def main():
         errors.append("Shop name is required")
     if not owner_name:
         errors.append("Owner name is required")
+    if not shop_category:
+        errors.append(
+            "Shop category is required — used to help the bot understand "
+            "what the shop sells (e.g. 'Clothing & Fashion')."
+        )
+    if not shop_description:
+        errors.append(
+            "Shop description is required — used to help the bot craft "
+            "semantically relevant product searches."
+        )
 
     try:
         owner_phone = normalise(owner_phone_raw)
@@ -325,6 +345,8 @@ def main():
         llm_model=cfg.llm_model,
         status=OperatorStatus.ACTIVE,
         created_at=datetime.utcnow(),
+        shop_category=shop_category,
+        shop_description=shop_description,
     )
     op_adapter.save(operator)
     print(f"  Operator {operator_id} created")

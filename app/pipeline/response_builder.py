@@ -22,8 +22,8 @@ async def send_response(
 
     Text is sent synchronously (customer sees it immediately).
     Images are sent fire-and-forget so a broken URL doesn't block the reply.
-    Only sends images for products the LLM actually mentioned in its reply —
-    search may return 5 results but the LLM only presents 1-3 to the customer.
+    Products here come from the LLM's explicit present_products call after
+    semantically reviewing search candidates — so we trust them directly.
     Long replies are split at the last "\n\n" before MAX_TEXT_CHARS.
     """
     if reply_text:

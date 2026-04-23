@@ -10,6 +10,9 @@ from app.adapters.inventory.sheets import GoogleSheetsLoader, SheetsLoadError
 from app.models.product import Product
 from app.utils.log import log
 
+# Wide-net retrieval — the LLM filters semantically via present_products.
+MAX_CANDIDATES = 10
+
 
 class InventoryCache(InventoryAdapter):
     def __init__(self, search_threshold: int = 70) -> None:
@@ -28,27 +31,23 @@ class InventoryCache(InventoryAdapter):
             self._index = new_index
 
     def search(self, query: str, shown_ids: list[str]) -> list[Product]:
+        """Wide-net fuzzy retrieval. The LLM is expected to semantically
+        review results and pick matches via present_products. So we return
+        more candidates at a lower threshold than a strict retrieval.
+
+        Ranking: prefer products where all query words match individually
+        (word_coverage), then fall back to full-query partial_ratio.
+        """
         if not query:
             return []
 
-        # Scoring strategy:
-        #   1. word_coverage = min(partial_ratio(w, index) for each query word)
-        #      A product qualifies only if EVERY significant query word matches
-        #      something. "yellow dress" on "Men's Dress Shirt" fails because
-        #      "yellow" doesn't match anything in that product.
-        #   2. full_score = partial_ratio(full_query, index) — fallback for
-        #      verbose queries (image descriptions) where word_coverage is
-        #      too strict.
-        #   A product passes if word_coverage >= threshold OR
-        #   full_score >= strong_threshold.
         q_lower = query.lower()
         words = [w for w in q_lower.split() if len(w) >= 3]
         if not words:
             words = q_lower.split()
 
-        strong_full_threshold = max(self._threshold + 10, 80)
         shown_set = set(shown_ids)
-        candidates: dict[str, tuple[float, Product]] = {}
+        candidates: list[tuple[float, float, Product]] = []
 
         with self._lock:
             for index_str, product in self._index:
@@ -64,15 +63,14 @@ class InventoryCache(InventoryAdapter):
                 else:
                     word_coverage = full_score
 
-                passes_coverage = word_coverage >= self._threshold
-                passes_full = full_score >= strong_full_threshold
-                if passes_coverage or passes_full:
-                    # Rank by word_coverage primarily (more precise), full as fallback
-                    ranking_score = max(word_coverage, full_score if passes_full else 0)
-                    candidates[product.id] = (ranking_score, product)
+                # Widen the net: keep anything loosely relevant. The LLM
+                # will filter semantically via present_products.
+                if word_coverage >= self._threshold or full_score >= (self._threshold + 15):
+                    candidates.append((word_coverage, full_score, product))
 
-        ranked = sorted(candidates.values(), key=lambda x: x[0], reverse=True)
-        return [p for _, p in ranked[:5]]
+        # Rank by (word_coverage desc, full_score desc)
+        candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        return [p for _, _, p in candidates[:MAX_CANDIDATES]]
 
     def get_all(self) -> list[Product]:
         with self._lock:

@@ -120,4 +120,6 @@ class SqliteOperatorAdapter(OperatorAdapter):
         d.setdefault("excluded_phones", [])
         d.setdefault("included_phones", [])
         d.setdefault("google_sheet_name", "Sheet1")
+        d.setdefault("shop_category", "")
+        d.setdefault("shop_description", "")
         return Operator(**d)

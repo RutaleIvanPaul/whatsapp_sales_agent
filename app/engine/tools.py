@@ -84,7 +84,39 @@ TRIGGER_HANDOFF_SCHEMA = {
     },
 }
 
-ALL_TOOLS = [SEARCH_PRODUCTS_SCHEMA, UPDATE_SESSION_SCHEMA, TRIGGER_HANDOFF_SCHEMA]
+PRESENT_PRODUCTS_SCHEMA = {
+    "name": "present_products",
+    "description": (
+        "After reviewing search_products results, explicitly pick which "
+        "products to show the customer as images. Call this with only the "
+        "product ids that ACTUALLY match the customer's request. Products "
+        "not listed here will not be shown. If none match, call with an "
+        "empty list and explain in your text reply. Up to 3 images are "
+        "sent to the customer."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "product_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "List of product ids from the most recent search_products "
+                    "result. Only include ids that truly match what the "
+                    "customer asked for — not just loose fuzzy matches."
+                ),
+            }
+        },
+        "required": ["product_ids"],
+    },
+}
+
+ALL_TOOLS = [
+    SEARCH_PRODUCTS_SCHEMA,
+    PRESENT_PRODUCTS_SCHEMA,
+    UPDATE_SESSION_SCHEMA,
+    TRIGGER_HANDOFF_SCHEMA,
+]
 
 # ── Tool handlers ────────────────────────────────────────────────────────────
 
@@ -105,7 +137,12 @@ MAX_QUERY_CHARS = 500
 def handle_search_products(
     query: str, session: Session, inventory: InventoryAdapter
 ) -> tuple[str, list[Product]]:
-    """Returns (string for LLM, products for response builder)."""
+    """Returns (string for LLM, products for response builder).
+
+    Search returns loose fuzzy matches — the LLM must semantically
+    review and call present_products to select matches. Nothing is
+    added to shown_product_ids from search alone.
+    """
     safe_query = (query or "")[:MAX_QUERY_CHARS]
     log("search_query", query=safe_query[:100])
     products = inventory.search(safe_query, session.shown_product_ids)
@@ -115,10 +152,6 @@ def handle_search_products(
     # *unprompted*", but an explicit ask overrides the exclusion).
     if not products:
         products = inventory.search(safe_query, [])
-
-    # Track shown ids on the session so future searches exclude them
-    new_ids = [p.id for p in products if p.id not in session.shown_product_ids]
-    session.shown_product_ids = list(session.shown_product_ids) + new_ids
 
     if not products:
         result_str = json.dumps({"products": [], "note": "No matching products found."})
@@ -131,11 +164,18 @@ def handle_search_products(
                         "name": p.name,
                         "price": p.price,
                         "description": p.description,
+                        "keywords": p.keywords,
                         "attributes": p.attributes,
                         "image_url": p.image_url,
                     }
                     for p in products
-                ]
+                ],
+                "note": (
+                    "These are fuzzy matches — review each carefully. Use "
+                    "name, description, keywords, and attributes to judge "
+                    "whether each truly matches the customer's request. "
+                    "Then call present_products with only the matching ids."
+                ),
             }
         )
 
@@ -145,6 +185,56 @@ def handle_search_products(
         result_count=len(products),
     )
     return result_str, products
+
+
+def handle_present_products(
+    product_ids: list[str],
+    session: Session,
+    last_search_candidates: list[Product],
+) -> tuple[str, list[Product]]:
+    """Mark which products the LLM wants to display.
+
+    Returns (tool_result_string, products_to_show). Adds the selected
+    ids to session.shown_product_ids so future searches exclude them.
+    Drops any ids not in the most recent search candidates (anti-
+    hallucination guard).
+    """
+    if not isinstance(product_ids, list):
+        return (
+            json.dumps({"error": "product_ids must be a list"}),
+            [],
+        )
+
+    by_id = {p.id: p for p in last_search_candidates}
+    selected: list[Product] = []
+    dropped: list[str] = []
+    for pid in product_ids:
+        if pid in by_id:
+            selected.append(by_id[pid])
+        else:
+            dropped.append(pid)
+
+    new_ids = [p.id for p in selected if p.id not in session.shown_product_ids]
+    session.shown_product_ids = list(session.shown_product_ids) + new_ids
+
+    log(
+        "products_presented",
+        selected=len(selected),
+        requested=len(product_ids),
+        dropped=len(dropped),
+    )
+
+    result = {
+        "accepted": [p.id for p in selected],
+        "dropped_invalid_ids": dropped,
+        "note": (
+            f"Will send up to 3 images for the {len(selected)} selected "
+            f"product(s). Write your short text reply next."
+            if selected
+            else "No products will be shown. Write a text-only reply."
+        ),
+    }
+    return json.dumps(result), selected
 
 
 def handle_update_session(fields: dict, session: Session) -> str:

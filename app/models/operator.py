@@ -29,3 +29,11 @@ class Operator:
     created_at: datetime
     excluded_phones: list[str] = field(default_factory=list)
     included_phones: list[str] = field(default_factory=list)
+    # Business context — feeds the system prompt so the LLM can craft
+    # semantically relevant searches and review results knowing the
+    # domain (e.g. "Clothing & Fashion", "Phone accessories").
+    shop_category: str = ""
+    # Free-form. Examples: "Sells women's and men's casual wear.
+    # Products tagged by gender, colour, size." Helps the LLM know
+    # what's in scope and how the data is typically organised.
+    shop_description: str = ""

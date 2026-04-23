@@ -152,6 +152,8 @@ def main():
             llm_model="claude-sonnet-4-6",
             status=OperatorStatus.ACTIVE,
             created_at=now,
+            shop_category="Footwear",
+            shop_description="Sells men's and women's shoes and sneakers.",
         )
 
         operators.save(operator)
@@ -245,6 +247,8 @@ def create_test_operator():
         llm_model="claude-sonnet-4-6",
         status=OperatorStatus.ACTIVE,
         created_at=datetime.utcnow(),
+        shop_category=os.getenv("OPERATOR_SHOP_CATEGORY", "General"),
+        shop_description=os.getenv("OPERATOR_SHOP_DESCRIPTION", ""),
     )
 
     # We need to encrypt the sensitive fields before calling save(), because

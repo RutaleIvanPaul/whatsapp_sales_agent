@@ -39,7 +39,12 @@ async def run(
     Returns (reply_text, products_to_show). Persists the session before
     returning. Never raises — on LLM failure returns a safe fallback reply.
     """
-    products_shown_this_turn: list[Product] = []
+    # products_to_present is populated ONLY by the LLM's present_products
+    # tool call after it semantically reviews search results.
+    products_to_present: list[Product] = []
+    # Candidates from the most recent search_products call — used to
+    # validate that present_products only references real search results.
+    last_search_candidates: list[Product] = []
 
     # Build system prompt — persona + rules + session context (no customer text)
     products_shown_names = _shown_names_from_session(session, inventory)
@@ -58,7 +63,7 @@ async def run(
         response = await _llm_call_with_retry(
             llm, messages, tools_mod.ALL_TOOLS, system,
             operator, session, storage, messaging, unified_text,
-            products_shown_this_turn, max_history_turns, round_idx,
+            products_to_present, max_history_turns, round_idx,
         )
         if response is None:
             # All retries exhausted — _llm_call_with_retry already
@@ -71,7 +76,7 @@ async def run(
             reply = response.text or FALLBACK_GENERIC_REPLY
             return _persist_and_return(
                 session, storage, operator, unified_text,
-                reply, products_shown_this_turn, max_history_turns,
+                reply, products_to_present, max_history_turns,
             )
 
         # Append the assistant message verbatim — adapter-shaped, preserves
@@ -90,7 +95,8 @@ async def run(
             try:
                 result_str = await _dispatch_tool(
                     tc, session, operator, inventory, unified_text,
-                    products_shown_this_turn, messaging, storage,
+                    products_to_present, last_search_candidates,
+                    messaging, storage,
                 )
             except Exception as e:
                 log(
@@ -122,7 +128,7 @@ async def run(
     if has_text:
         return _persist_and_return(
             session, storage, operator, unified_text,
-            last_response.text, products_shown_this_turn, max_history_turns,
+            last_response.text, products_to_present, max_history_turns,
         )
     # No text at all — silence + HANDED_OFF + operator alert
     await _handle_fatal_failure(
@@ -278,7 +284,8 @@ async def _dispatch_tool(
     operator: Operator,
     inventory: InventoryAdapter,
     unified_text: str,
-    products_shown_this_turn: list[Product],
+    products_to_present: list[Product],
+    last_search_candidates: list[Product],
     messaging: MessagingAdapter,
     storage: StorageAdapter,
 ) -> str:
@@ -289,14 +296,20 @@ async def _dispatch_tool(
         result_str, products = tools_mod.handle_search_products(
             args.get("query", ""), session, inventory
         )
-        # Only keep products from the MOST RECENT search call.
-        # If the LLM tried a broad search first and narrowed down, the
-        # broader results would otherwise leak into images (e.g. "shirt"
-        # search returning men's items that shouldn't appear when the
-        # final search is "yellow dress"). The last search represents
-        # what the LLM concluded is relevant.
-        products_shown_this_turn.clear()
-        products_shown_this_turn.extend(products)
+        # Replace candidate pool — only the latest search's results are
+        # valid targets for present_products.
+        last_search_candidates.clear()
+        last_search_candidates.extend(products)
+        return result_str
+
+    if name == "present_products":
+        result_str, selected = tools_mod.handle_present_products(
+            args.get("product_ids", []), session, last_search_candidates,
+        )
+        # Replace presentation list. If the LLM calls present_products
+        # more than once in a turn, each call overrides the previous.
+        products_to_present.clear()
+        products_to_present.extend(selected)
         return result_str
 
     if name == "update_session":

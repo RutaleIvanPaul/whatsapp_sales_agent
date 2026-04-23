@@ -21,8 +21,9 @@ Read only the section you need. Never load the entire file at once.
 
 ## Current phase
 
-PHASE 6 — Resilience
-Read .claude/prompts/phase6.md before doing anything else.
+PHASE 7 — Human Feel Evaluation
+Read .claude/prompts/phase6.md for prior context and CHANGELOG_PHASE7.md
+for every change made since the Phase 6 hardening merge.
 Update this line when advancing phases.
 
 ---
