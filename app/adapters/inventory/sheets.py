@@ -11,10 +11,13 @@ from googleapiclient.errors import HttpError
 from app.models.product import Product
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-EXPECTED_HEADERS = [
+REQUIRED_HEADERS = [
     "id", "name", "price", "description", "keywords",
     "image_url", "available", "slug", "attributes",
 ]
+# Optional 10th column — if present, its values populate
+# Product.haggling_notes. Absent column is fine.
+OPTIONAL_HAGGLING_HEADER = "haggling_notes"
 MAX_RETRIES = 3
 BACKOFF_SECONDS = [1, 2, 4]
 
@@ -73,10 +76,12 @@ class GoogleSheetsLoader:
 
     def _fetch_and_parse(self) -> list[Product]:
         service = build("sheets", "v4", credentials=self._creds, cache_discovery=False)
+        # Fetch through column J so the optional haggling_notes column
+        # is picked up if present.
         result = (
             service.spreadsheets()
             .values()
-            .get(spreadsheetId=self._sheets_id, range=f"{self._sheet_name}!A:I")
+            .get(spreadsheetId=self._sheets_id, range=f"{self._sheet_name}!A:J")
             .execute()
         )
 
@@ -85,15 +90,20 @@ class GoogleSheetsLoader:
             return []
 
         headers = [h.strip().lower() for h in rows[0]]
-        if headers != EXPECTED_HEADERS:
+        # First 9 columns must be the required headers.
+        if headers[: len(REQUIRED_HEADERS)] != REQUIRED_HEADERS:
             raise SheetsLoadError(
-                f"Header mismatch: expected {EXPECTED_HEADERS}, got {headers}"
+                f"Header mismatch: first 9 columns must be {REQUIRED_HEADERS}, "
+                f"got {headers[: len(REQUIRED_HEADERS)]}"
             )
+        has_haggling_col = (
+            len(headers) >= 10 and headers[9] == OPTIONAL_HAGGLING_HEADER
+        )
 
         products: list[Product] = []
         for row in rows[1:]:
-            # Pad short rows with empty strings
-            padded = row + [""] * (9 - len(row))
+            # Pad short rows with empty strings to max expected cols (10)
+            padded = row + [""] * (10 - len(row))
 
             row_id = padded[0].strip()
             name = padded[1].strip()
@@ -103,6 +113,7 @@ class GoogleSheetsLoader:
             available_raw = padded[6].strip().upper()
             slug_raw = padded[7].strip()
             attrs_raw = padded[8].strip()
+            haggling_raw = padded[9].strip() if has_haggling_col else ""
 
             products.append(
                 Product(
@@ -115,6 +126,7 @@ class GoogleSheetsLoader:
                     available=available_raw in ("TRUE", "1"),
                     slug=slug_raw or None,
                     attributes=attrs_raw or None,
+                    haggling_notes=haggling_raw or None,
                 )
             )
 

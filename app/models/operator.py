@@ -37,3 +37,13 @@ class Operator:
     # Products tagged by gender, colour, size." Helps the LLM know
     # what's in scope and how the data is typically organised.
     shop_description: str = ""
+    # Haggling strategy — all fields are optional, resolved at prompt-
+    # build time via strict precedence (see app/engine/haggling.py).
+    # haggling_policy is a free-form shop-wide statement; product-level
+    # rules (Product.haggling_notes) override it per-item.
+    haggling_policy: str = ""
+    # If True, the bot never autonomously accepts/declines a discount
+    # request. It calls request_haggle_approval, notifies the owner
+    # with full context (policy + product notes + customer ask), and
+    # awaits the owner's real-time instruction.
+    haggling_notify_first: bool = False

@@ -122,4 +122,6 @@ class SqliteOperatorAdapter(OperatorAdapter):
         d.setdefault("google_sheet_name", "Sheet1")
         d.setdefault("shop_category", "")
         d.setdefault("shop_description", "")
+        d.setdefault("haggling_policy", "")
+        d.setdefault("haggling_notify_first", False)
         return Operator(**d)

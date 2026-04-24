@@ -111,11 +111,45 @@ PRESENT_PRODUCTS_SCHEMA = {
     },
 }
 
+REQUEST_HAGGLE_APPROVAL_SCHEMA = {
+    "name": "request_haggle_approval",
+    "description": (
+        "Used ONLY in notify-first haggling mode. Escalate a discount or "
+        "price-negotiation request to the shop owner for approval. Do NOT "
+        "call trigger_handoff for haggling — this tool is the right one. "
+        "After calling, write a brief holding message to the customer "
+        "(e.g. 'Let me check with my boss and get back to you')."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "customer_ask": {
+                "type": "string",
+                "description": (
+                    "Verbatim or near-verbatim: what the customer said they "
+                    "want. e.g. '10% off the navy dress', 'both shoes for "
+                    "140k instead of 170k'."
+                ),
+            },
+            "product_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Ids of the product(s) the customer is haggling on, "
+                    "from the most recent search result."
+                ),
+            },
+        },
+        "required": ["customer_ask"],
+    },
+}
+
 ALL_TOOLS = [
     SEARCH_PRODUCTS_SCHEMA,
     PRESENT_PRODUCTS_SCHEMA,
     UPDATE_SESSION_SCHEMA,
     TRIGGER_HANDOFF_SCHEMA,
+    REQUEST_HAGGLE_APPROVAL_SCHEMA,
 ]
 
 # ── Tool handlers ────────────────────────────────────────────────────────────
@@ -167,6 +201,7 @@ def handle_search_products(
                         "keywords": p.keywords,
                         "attributes": p.attributes,
                         "image_url": p.image_url,
+                        "haggling_notes": p.haggling_notes,
                     }
                     for p in products
                 ],
@@ -174,7 +209,9 @@ def handle_search_products(
                     "These are fuzzy matches — review each carefully. Use "
                     "name, description, keywords, and attributes to judge "
                     "whether each truly matches the customer's request. "
-                    "Then call present_products with only the matching ids."
+                    "Then call present_products with only the matching ids. "
+                    "If haggling_notes is non-empty, follow it if the "
+                    "customer haggles on that item."
                 ),
             }
         )
@@ -269,6 +306,74 @@ def handle_update_session(fields: dict, session: Session) -> str:
         fields_changed=",".join(applied.keys()) if applied else "none",
     )
     return json.dumps({"applied": list(applied.keys()), "rejected": rejected})
+
+
+async def handle_request_haggle_approval(
+    customer_ask: str,
+    product_ids: list[str],
+    session: Session,
+    operator: Operator,
+    messaging: "MessagingAdapter",
+    storage: "StorageAdapter",
+    inventory: "InventoryAdapter",
+    triggering_message: str,
+) -> str:
+    """Notify-first haggling: pause the bot, alert the owner, set the
+    session to HANDED_OFF with reason='haggling'.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime as _datetime
+    from app.engine import haggling as _haggling
+
+    by_id = {p.id: p for p in inventory.get_all()}
+    referenced = [by_id[pid] for pid in (product_ids or []) if pid in by_id]
+
+    items_context = "Items: " + (
+        ", ".join(f"{p.name} ({p.price})" for p in referenced)
+        if referenced
+        else "(not specified)"
+    )
+    per_product_notes = "\n  ".join(
+        f"{p.name}: {p.haggling_notes}"
+        for p in referenced
+        if p.haggling_notes
+    )
+
+    # Flip session state before sending messages — any retry will see
+    # we're already in a haggle handoff.
+    session.stage = Stage.HANDED_OFF
+    session.handoff_reason = "haggling"
+    session.handed_off_at = _datetime.utcnow()
+    storage.set(operator.operator_id, session.phone, session)
+
+    alert = _haggling.build_haggle_alert(
+        operator=operator,
+        session=session,
+        customer_ask=customer_ask or triggering_message[:200],
+        items_context=items_context,
+        per_product_notes=per_product_notes,
+    )
+    _asyncio.create_task(
+        messaging.send_text(operator.owner_personal_phone, alert, operator)
+    )
+
+    log(
+        "haggling_approval_requested",
+        operator_id=operator.operator_id,
+        product_count=len(referenced),
+        notify_first=operator.haggling_notify_first,
+    )
+
+    return json.dumps(
+        {
+            "status": "awaiting_owner",
+            "note": (
+                "The owner will decide how to respond. Write a brief, "
+                "natural holding message to the customer — do not quote "
+                "prices or concede anything."
+            ),
+        }
+    )
 
 
 async def handle_trigger_handoff(

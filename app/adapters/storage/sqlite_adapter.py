@@ -98,6 +98,7 @@ def _deserialise_session(d: dict) -> Session:
     d.pop("last_holding_sent", None)
     # Backward compat: default for new field
     d.setdefault("intent_gate_state", "unclassified")
+    d.setdefault("handoff_reason", None)
     for field in ("handed_off_at", "last_active", "created_at"):
         if d.get(field) is not None:
             d[field] = datetime.fromisoformat(d[field])

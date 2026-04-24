@@ -23,6 +23,35 @@ FALLBACK_GENERIC_REPLY = (
 )
 
 
+def _looks_malformed(text: str) -> bool:
+    """Catch obvious LLM output corruption like 'Let's let … we … ... …'.
+
+    The model occasionally emits a response that's mostly punctuation,
+    ellipses, or fragmented words. Too short to be a real reply but not
+    empty. Don't send these to the customer.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) < 10:
+        return True
+    # Multiple ellipsis or trailing-off patterns strongly suggest a
+    # fragmented generation that was abandoned mid-thought.
+    ellipsis_count = stripped.count("…") + stripped.count("...")
+    if ellipsis_count >= 2:
+        return True
+    # Ratio of letters to non-letters — if a reply is mostly dots,
+    # ellipses, asterisks, it's malformed.
+    letters = sum(1 for c in stripped if c.isalpha())
+    if letters == 0 or letters / max(len(stripped), 1) < 0.5:
+        return True
+    # Too few real word tokens for a coherent reply.
+    word_tokens = [w for w in stripped.split() if any(c.isalpha() for c in w)]
+    if len(word_tokens) < 3:
+        return True
+    return False
+
+
 async def run(
     operator: Operator,
     session: Session,
@@ -74,6 +103,13 @@ async def run(
 
         if not response.tool_calls:
             reply = response.text or FALLBACK_GENERIC_REPLY
+            if _looks_malformed(reply):
+                log(
+                    "llm_malformed_reply",
+                    operator_id=operator.operator_id,
+                    preview=reply[:80],
+                )
+                reply = FALLBACK_GENERIC_REPLY
             return _persist_and_return(
                 session, storage, operator, unified_text,
                 reply, products_to_present, max_history_turns,
@@ -319,6 +355,13 @@ async def _dispatch_tool(
         return await tools_mod.handle_trigger_handoff(
             args.get("summary", ""), session, operator, messaging,
             storage, inventory, unified_text
+        )
+
+    if name == "request_haggle_approval":
+        return await tools_mod.handle_request_haggle_approval(
+            args.get("customer_ask", ""),
+            args.get("product_ids", []),
+            session, operator, messaging, storage, inventory, unified_text,
         )
 
     return f"Unknown tool: {name}"

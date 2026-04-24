@@ -58,6 +58,42 @@ def main():
         "Products tagged by gender, size, colour.'"
     )
     shop_description = input("Shop description: ").strip()
+
+    # ── Haggling strategy (optional) ────────────────────────────────
+    print()
+    print("───── Haggling (optional) ─────")
+    print(
+        "Customers often ask for discounts. You have three ways to shape\n"
+        "how the bot handles this:\n"
+        "\n"
+        "  1. A shop-wide policy (next prompt) — 1-3 sentences the bot will\n"
+        "     follow every time a customer haggles. Examples:\n"
+        '       "Prices are fixed. No discounts."\n'
+        '       "10% off purchases over 500k UGX. Buy 2, get 20% off the cheaper."\n'
+        '       "Small discounts OK on clothing, fixed on electronics."\n'
+        "\n"
+        "  2. Per-product rules — optional 'haggling_notes' column in your\n"
+        "     Google Sheet for item-specific overrides (e.g. 'Clearance, up\n"
+        "     to 60% off', 'Firm — premium item'). Product rules override\n"
+        "     the shop-wide policy.\n"
+        "\n"
+        "  3. Check-with-me mode (next prompt) — the bot notifies you before\n"
+        "     responding to any haggling and waits for your decision. Your\n"
+        "     policy and product notes are shown as context in the alert.\n"
+        "\n"
+        'Leaving everything blank means: "prices are fixed, decline politely."\n'
+    )
+    haggling_policy = input(
+        "Haggling policy (1-3 sentences, or Enter to skip): "
+    ).strip()
+    haggling_notify_first_raw = input(
+        "Check with you before responding to haggling? (y/N): "
+    ).strip().lower()
+    haggling_notify_first = haggling_notify_first_raw in ("y", "yes")
+    if len(haggling_policy) > 500:
+        print("  (policy truncated to 500 chars)")
+        haggling_policy = haggling_policy[:500]
+
     sheets_id = input("Google Sheets ID (from sheet URL): ").strip()
     sheet_name_input = input("Sheet tab name [Sheet1]: ").strip()
     sheet_name = sheet_name_input or "Sheet1"
@@ -347,6 +383,8 @@ def main():
         created_at=datetime.utcnow(),
         shop_category=shop_category,
         shop_description=shop_description,
+        haggling_policy=haggling_policy,
+        haggling_notify_first=haggling_notify_first,
     )
     op_adapter.save(operator)
     print(f"  Operator {operator_id} created")
@@ -472,6 +510,12 @@ def main():
     print(f"  Webhook configured: {'yes' if not skip_webhook else 'skipped'}")
     print(f"  Status:            LIVE")
     print("─" * 50)
+    print()
+    print("Haggling strategy:")
+    print(f"  Policy:            {haggling_policy or '(default: prices are fixed, decline politely)'}")
+    print(f"  Check with you:    {'yes' if haggling_notify_first else 'no'}")
+    print(f"  Per-product rules: add a 'haggling_notes' column to your sheet")
+    print(f"                     any time — the bot reads it automatically")
     print()
     print(f"Salelular is now active on {shop_name}'s WhatsApp number.")
     print()

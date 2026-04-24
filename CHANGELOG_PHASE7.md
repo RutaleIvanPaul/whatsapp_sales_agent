@@ -273,6 +273,60 @@ one-time ~5–15s Sheets load.
 
 ---
 
+## Haggling strategy (major)
+
+Files:
+- [app/models/operator.py](app/models/operator.py) — `haggling_policy`, `haggling_notify_first`
+- [app/models/product.py](app/models/product.py) — `haggling_notes`
+- [app/models/session.py](app/models/session.py) — `handoff_reason`
+- [app/adapters/inventory/sheets.py](app/adapters/inventory/sheets.py) — optional J column
+- [app/engine/haggling.py](app/engine/haggling.py) (new)
+- [app/engine/tools.py](app/engine/tools.py) — new `request_haggle_approval` tool
+- [app/engine/system_prompt.py](app/engine/system_prompt.py) — delegates haggling section to haggling.py
+- [app/webhook/owner_action_handler.py](app/webhook/owner_action_handler.py) — new `reply` command
+- [scripts/onboard_operator.py](scripts/onboard_operator.py) — haggling prompts + recap
+
+Three levers in strict precedence:
+
+1. **Operator `haggling_policy`** (free-form, ≤3 sentences) — shop-wide
+   stance set at onboarding. Injected verbatim into the system prompt.
+2. **Product `haggling_notes`** (optional J column in the Google Sheet) —
+   per-item override of the shop-wide policy. Read by the LLM during
+   semantic review of search results.
+3. **`haggling_notify_first` flag** — when True, the LLM is forbidden
+   from accepting/declining autonomously. Every haggling attempt calls
+   `request_haggle_approval` which alerts the owner with full context
+   (policy + relevant product notes + customer ask), sets the session
+   to HANDED_OFF with `handoff_reason="haggling"`, and lets the customer
+   know "let me check with my boss".
+
+The prompt branches at build time (`app/engine/haggling.py::render_prompt_section`)
+so the LLM only ever sees ONE policy mode — autonomous or notify-first.
+
+**Relay mechanism** (new `reply` command): when the owner is in notify-
+first mode and wants to respond with real-time context, they type on
+the control thread:
+```
+reply +256700123456 Sure, I can do 140k for both shoes.
+```
+`_cmd_reply` validates, finds the session, and calls
+`haggling.relay_owner_instruction` which:
+- Uses the cheaper classifier_llm to rephrase the owner's instruction
+  into the bot's voice.
+- Sends the rephrased text to the customer.
+- Appends to session history.
+- Flips session back to EXPLORING.
+- Confirms to the owner.
+
+All haggling business logic lives in `app/engine/haggling.py` —
+transport-agnostic. The CLI onboarding, the WhatsApp control thread,
+and a future owner web dashboard all call the same functions.
+
+`classifier_llm` is now exposed on `app.state` so the owner handler can
+reach it without threading through every function signature.
+
+---
+
 ## Prompt: no "let me share" without actually sharing
 
 File: [app/engine/system_prompt.py](app/engine/system_prompt.py)

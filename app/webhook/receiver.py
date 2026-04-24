@@ -148,6 +148,7 @@ async def receive(request: Request) -> Response:
                     owner_action_handler.handle(
                         payload, operator, state.storage_adapter,
                         state.messaging_adapter, state.operator_adapter,
+                        state.classifier_llm,
                     )
                 )
                 continue
@@ -191,6 +192,7 @@ async def receive(request: Request) -> Response:
                     owner_action_handler.handle(
                         payload, operator, state.storage_adapter,
                         state.messaging_adapter, state.operator_adapter,
+                        state.classifier_llm,
                     )
                 )
                 continue
