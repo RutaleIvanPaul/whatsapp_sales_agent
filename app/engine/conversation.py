@@ -16,7 +16,7 @@ from app.models.product import Product
 from app.models.session import Session, Stage
 from app.utils.log import log
 
-MAX_TOOL_ROUNDS = 5
+MAX_TOOL_ROUNDS = 8
 TIMEOUT_RETRY_WAITS = [3, 5]  # seconds to wait between attempts 1→2, 2→3
 FALLBACK_GENERIC_REPLY = (
     "Sorry — I had trouble processing that. Could you try rephrasing?"
@@ -70,6 +70,9 @@ async def run(
     # Candidates from the most recent search_products call — used to
     # validate that present_products only references real search results.
     last_search_candidates: list[Product] = []
+    # Track search queries already issued this turn to break loops where
+    # the LLM keeps re-searching instead of presenting.
+    seen_search_queries: set[str] = set()
 
     # Build system prompt — persona + rules + session context (no customer text)
     products_shown_names = _shown_names_from_session(session, inventory)
@@ -128,6 +131,7 @@ async def run(
                 result_str = await _dispatch_tool(
                     tc, session, operator, inventory, unified_text,
                     products_to_present, last_search_candidates,
+                    seen_search_queries,
                     messaging, storage,
                 )
             except Exception as e:
@@ -318,6 +322,7 @@ async def _dispatch_tool(
     unified_text: str,
     products_to_present: list[Product],
     last_search_candidates: list[Product],
+    seen_search_queries: set[str],
     messaging: MessagingAdapter,
     storage: StorageAdapter,
 ) -> str:
@@ -325,8 +330,31 @@ async def _dispatch_tool(
     args = tc.get("input") or {}
 
     if name == "search_products":
+        query = (args.get("query") or "").strip()
+        normalised = query.lower()
+        # Break loops: if the LLM repeats a query it already ran this
+        # turn, refuse the repeat and push it toward a decision.
+        if normalised and normalised in seen_search_queries:
+            log(
+                "search_query_repeat_blocked",
+                operator_id=operator.operator_id,
+                query=normalised[:80],
+            )
+            import json as _json
+            return _json.dumps({
+                "error": "duplicate_query",
+                "note": (
+                    "You already ran this exact search this turn. Do NOT "
+                    "search again with the same query. Either call "
+                    "present_products on the existing candidates, write "
+                    "a text reply to the customer, or issue a different "
+                    "query."
+                ),
+            })
+        if normalised:
+            seen_search_queries.add(normalised)
         result_str, products = tools_mod.handle_search_products(
-            args.get("query", ""), session, inventory
+            query, session, inventory
         )
         # Replace candidate pool — only the latest search's results are
         # valid targets for present_products.

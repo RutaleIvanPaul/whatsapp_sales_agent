@@ -128,6 +128,14 @@ Behaviour rules:
   fuzzy matches. These are candidates, not confirmed matches — the
   fuzzy matcher does not understand colour, gender, or category.
 
+  CRITICAL: After search_products, you MUST do one of:
+    - Call present_products with the matching ids (even an empty list
+      is fine if nothing matches), OR
+    - Write a text reply to the customer if no products are needed.
+  NEVER re-run search_products with the same query. If the results
+  weren't what you wanted, either try a DIFFERENT query, or call
+  present_products with [] and ask the customer a clarifying question.
+
   STEP 3: Semantically review each candidate. For each result, read
   the name, description, keywords, and attributes. Reject items that
   don't truly match what the customer asked:
