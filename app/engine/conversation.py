@@ -26,14 +26,14 @@ FALLBACK_GENERIC_REPLY = (
 def _looks_malformed(text: str) -> bool:
     """Catch obvious LLM output corruption like 'Let's let … we … ... …'.
 
-    The model occasionally emits a response that's mostly punctuation,
-    ellipses, or fragmented words. Too short to be a real reply but not
-    empty. Don't send these to the customer.
+    Only flag clearly-broken output — fragmented ellipses, mostly-
+    punctuation, or impossibly short. Valid short human replies like
+    "Sure thing!" or "Got it — sending now." must pass.
     """
     if not text:
         return False
     stripped = text.strip()
-    if len(stripped) < 10:
+    if len(stripped) < 4:
         return True
     # Multiple ellipsis or trailing-off patterns strongly suggest a
     # fragmented generation that was abandoned mid-thought.
@@ -43,11 +43,7 @@ def _looks_malformed(text: str) -> bool:
     # Ratio of letters to non-letters — if a reply is mostly dots,
     # ellipses, asterisks, it's malformed.
     letters = sum(1 for c in stripped if c.isalpha())
-    if letters == 0 or letters / max(len(stripped), 1) < 0.5:
-        return True
-    # Too few real word tokens for a coherent reply.
-    word_tokens = [w for w in stripped.split() if any(c.isalpha() for c in w)]
-    if len(word_tokens) < 3:
+    if letters == 0 or letters / max(len(stripped), 1) < 0.4:
         return True
     return False
 

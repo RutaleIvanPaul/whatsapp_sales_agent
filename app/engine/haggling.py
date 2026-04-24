@@ -66,6 +66,17 @@ def render_prompt_section(operator: Operator) -> str:
         "  just because the customer asks for a discount. Only escalate\n"
         "  via trigger_handoff if they then commit to buying a specific\n"
         "  item (\"I'll take it\").\n"
+        "\n"
+        "  If the customer pushes back on your haggling response (e.g.\n"
+        "  \"but I already have 3 items\", \"the 2 shirts + pants count\",\n"
+        "  \"I've seen other shops do it cheaper\"):\n"
+        "    - Stay on the haggling thread. Do not pivot to a new product\n"
+        "      search unless the customer explicitly asks for one.\n"
+        "    - Re-read their argument against the policy above. If their\n"
+        "      claim is valid under the policy, ACCEPT it and apply the\n"
+        "      discount in your reply (state the new price clearly).\n"
+        "    - If their claim is NOT valid under the policy, explain why\n"
+        "      briefly and hold the line without inventing new terms.\n"
     )
 
 
