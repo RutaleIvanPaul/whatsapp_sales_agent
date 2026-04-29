@@ -10,6 +10,9 @@ from app.adapters.inventory.sheets import GoogleSheetsLoader, SheetsLoadError
 from app.models.product import Product
 from app.utils.log import log
 
+# Wide-net retrieval — the LLM filters semantically via present_products.
+MAX_CANDIDATES = 10
+
 
 class InventoryCache(InventoryAdapter):
     def __init__(self, search_threshold: int = 70) -> None:
@@ -28,37 +31,46 @@ class InventoryCache(InventoryAdapter):
             self._index = new_index
 
     def search(self, query: str, shown_ids: list[str]) -> list[Product]:
+        """Wide-net fuzzy retrieval. The LLM is expected to semantically
+        review results and pick matches via present_products. So we return
+        more candidates at a lower threshold than a strict retrieval.
+
+        Ranking: prefer products where all query words match individually
+        (word_coverage), then fall back to full-query partial_ratio.
+        """
         if not query:
             return []
 
-        # Build candidate queries: the full query plus progressively shorter
-        # sub-queries (bigrams of the words). Long vision descriptions produce
-        # verbose queries that score low on partial_ratio; shorter fragments
-        # match much better against index strings.
-        words = query.lower().split()
-        sub_queries = [query.lower()]
-        if len(words) >= 3:
-            for i in range(len(words) - 1):
-                sub_queries.append(f"{words[i]} {words[i + 1]}")
+        q_lower = query.lower()
+        words = [w for w in q_lower.split() if len(w) >= 3]
+        if not words:
+            words = q_lower.split()
 
         shown_set = set(shown_ids)
-        candidates: dict[str, tuple[float, Product]] = {}
+        candidates: list[tuple[float, float, Product]] = []
 
         with self._lock:
-            for sq in sub_queries:
-                for index_str, product in self._index:
-                    if not product.available:
-                        continue
-                    if product.id in shown_set:
-                        continue
-                    score = fuzz.partial_ratio(sq, index_str)
-                    if score >= self._threshold:
-                        existing = candidates.get(product.id)
-                        if existing is None or score > existing[0]:
-                            candidates[product.id] = (score, product)
+            for index_str, product in self._index:
+                if not product.available:
+                    continue
+                if product.id in shown_set:
+                    continue
 
-        ranked = sorted(candidates.values(), key=lambda x: x[0], reverse=True)
-        return [p for _, p in ranked[:5]]
+                full_score = fuzz.partial_ratio(q_lower, index_str)
+                if words:
+                    word_scores = [fuzz.partial_ratio(w, index_str) for w in words]
+                    word_coverage = min(word_scores)
+                else:
+                    word_coverage = full_score
+
+                # Widen the net: keep anything loosely relevant. The LLM
+                # will filter semantically via present_products.
+                if word_coverage >= self._threshold or full_score >= (self._threshold + 15):
+                    candidates.append((word_coverage, full_score, product))
+
+        # Rank by (word_coverage desc, full_score desc)
+        candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        return [p for _, _, p in candidates[:MAX_CANDIDATES]]
 
     def get_all(self) -> list[Product]:
         with self._lock:

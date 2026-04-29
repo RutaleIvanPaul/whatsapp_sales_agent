@@ -8,7 +8,7 @@ from app.adapters.messaging.base import MessagingAdapter
 from app.models.operator import Operator
 from app.utils.crypto import decrypt
 from app.utils.log import log
-from app.utils.phone import hash_for_log, to_whapi
+from app.utils.phone import from_whapi, hash_for_log, to_whapi
 from app.utils.sent_tracker import sent_tracker
 
 WHAPI_BASE = "https://gate.whapi.cloud"
@@ -138,6 +138,65 @@ class WhapiMessagingAdapter(MessagingAdapter):
             )
 
         await self._send_alert_noretry(operator=operator, message=alert)
+
+    async def check_health(self, operator: Operator) -> dict:
+        token = decrypt(operator.whapi_channel_token, self._key)
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                resp = await client.get(f"{WHAPI_BASE}/health?token={token}")
+                data = resp.json()
+                status_info = data.get("status", {})
+                status_code = status_info.get("code")
+                return {
+                    "connected": status_code == 4,
+                    "status_text": status_info.get("text", "unknown"),
+                    "status_code": status_code,
+                    "user": data.get("user", {}),
+                }
+        except Exception as e:
+            return {
+                "connected": False,
+                "status_text": f"error: {type(e).__name__}",
+                "status_code": None,
+            }
+
+    async def get_contacts(self, operator: Operator) -> set[str]:
+        token = decrypt(operator.whapi_channel_token, self._key)
+        base_url = f"{WHAPI_BASE}/contacts?token={token}"
+        phones: set[str] = set()
+        page_size = 500
+        offset = 0
+
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            while True:
+                url = f"{base_url}&count={page_size}&offset={offset}"
+                resp = await client.get(url)
+                if resp.status_code >= 400:
+                    log(
+                        "error",
+                        component="contacts",
+                        error_type="fetch_failed",
+                        message=f"http_{resp.status_code}",
+                        operator_id=operator.operator_id,
+                    )
+                    raise RuntimeError(f"Contacts API returned HTTP {resp.status_code}")
+
+                data = resp.json()
+                batch = data.get("contacts", [])
+                for c in batch:
+                    raw = c.get("id") or c.get("phone") or ""
+                    if not raw:
+                        continue
+                    try:
+                        phones.add(from_whapi(raw))
+                    except ValueError:
+                        continue
+
+                if len(batch) < page_size:
+                    break
+                offset += page_size
+
+        return phones
 
     async def _send_alert_noretry(self, operator: Operator, message: str) -> None:
         try:

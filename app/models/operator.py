@@ -22,9 +22,28 @@ class Operator:
     whapi_webhook_secret: str
     whapi_connected_phone: str | None
     google_sheets_id: str
+    google_sheet_name: str
     luganda_canned_response: str
     llm_model: str
     status: OperatorStatus
     created_at: datetime
     excluded_phones: list[str] = field(default_factory=list)
     included_phones: list[str] = field(default_factory=list)
+    # Business context — feeds the system prompt so the LLM can craft
+    # semantically relevant searches and review results knowing the
+    # domain (e.g. "Clothing & Fashion", "Phone accessories").
+    shop_category: str = ""
+    # Free-form. Examples: "Sells women's and men's casual wear.
+    # Products tagged by gender, colour, size." Helps the LLM know
+    # what's in scope and how the data is typically organised.
+    shop_description: str = ""
+    # Haggling strategy — all fields are optional, resolved at prompt-
+    # build time via strict precedence (see app/engine/haggling.py).
+    # haggling_policy is a free-form shop-wide statement; product-level
+    # rules (Product.haggling_notes) override it per-item.
+    haggling_policy: str = ""
+    # If True, the bot never autonomously accepts/declines a discount
+    # request. It calls request_haggle_approval, notifies the owner
+    # with full context (policy + product notes + customer ask), and
+    # awaits the owner's real-time instruction.
+    haggling_notify_first: bool = False

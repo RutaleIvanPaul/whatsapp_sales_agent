@@ -26,3 +26,9 @@ class Session:
     handed_off_at: datetime | None
     last_active: datetime
     created_at: datetime
+    # Intent gate state: "unclassified", "passed" (SALES detected → gate off),
+    # or "silenced" (3 turns without sales intent → drop future messages).
+    intent_gate_state: str = "unclassified"
+    # Reason the session is in HANDED_OFF — used by owner_action_handler
+    # to route owner responses correctly. Values: None, "sale", "haggling".
+    handoff_reason: str | None = None

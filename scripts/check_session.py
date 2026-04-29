@@ -147,10 +147,13 @@ def main():
             whapi_webhook_secret="secret-webhook-abc",
             whapi_connected_phone="+256700111111",
             google_sheets_id="sheet-id-123",
+            google_sheet_name="Sheet1",
             luganda_canned_response="Webale okutuukirira!",
             llm_model="claude-sonnet-4-6",
             status=OperatorStatus.ACTIVE,
             created_at=now,
+            shop_category="Footwear",
+            shop_description="Sells men's and women's shoes and sneakers.",
         )
 
         operators.save(operator)
@@ -237,12 +240,15 @@ def create_test_operator():
         whapi_webhook_secret=webhook_secret,
         whapi_connected_phone=None,
         google_sheets_id=os.getenv("GOOGLE_SHEETS_ID", ""),
+        google_sheet_name=os.getenv("GOOGLE_SHEET_NAME", "Sheet1"),
         luganda_canned_response=(
             "Webale okutuukirira! Nnyinza okuyamba oluvannyuma."
         ),
         llm_model="claude-sonnet-4-6",
         status=OperatorStatus.ACTIVE,
         created_at=datetime.utcnow(),
+        shop_category=os.getenv("OPERATOR_SHOP_CATEGORY", "General"),
+        shop_description=os.getenv("OPERATOR_SHOP_DESCRIPTION", ""),
     )
 
     # We need to encrypt the sensitive fields before calling save(), because

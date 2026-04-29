@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
+from app.adapters.llm.base import LLMAdapter
 from app.adapters.messaging.base import MessagingAdapter
 from app.adapters.operator.base import OperatorAdapter
 from app.adapters.storage.base import StorageAdapter
+from app.engine import haggling as haggling_mod
 from app.models.operator import Operator
 from app.models.session import Session, Stage
 from app.utils.log import log
@@ -26,6 +28,7 @@ async def handle(
     storage: StorageAdapter,
     messaging: MessagingAdapter,
     operator_adapter: OperatorAdapter | None = None,
+    rephrase_llm: LLMAdapter | None = None,
 ) -> None:
     """Route owner actions: control-thread commands OR passive interruption."""
 
@@ -36,9 +39,11 @@ async def handle(
     is_from_me = msg.get("from_me", False)
 
     if is_from_me:
-        await _handle_passive_interruption(msg, operator, storage)
+        await _handle_passive_interruption(msg, operator, storage, messaging)
     else:
-        await _handle_control_command(msg, operator, storage, messaging, operator_adapter)
+        await _handle_control_command(
+            msg, operator, storage, messaging, operator_adapter, rephrase_llm
+        )
 
 
 # ── CASE A: control thread ───────────────────────────────────────────────────
@@ -49,6 +54,7 @@ async def _handle_control_command(
     storage: StorageAdapter,
     messaging: MessagingAdapter,
     operator_adapter: OperatorAdapter | None = None,
+    rephrase_llm: LLMAdapter | None = None,
 ) -> None:
     raw_from = msg.get("from", "")
     try:
@@ -59,12 +65,22 @@ async def _handle_control_command(
     if sender != operator.owner_personal_phone:
         return
 
-    text = ((msg.get("text") or {}).get("body") or "").strip().lower()
+    original_text = ((msg.get("text") or {}).get("body") or "").strip()
+    text = original_text.lower()
     if not text:
         return
 
     if text.startswith("resume"):
         target_phone = _parse_phone_arg(text, "resume")
+        if target_phone == _INVALID_PHONE:
+            raw = text[len("resume"):].strip()
+            await messaging.send_text(
+                operator.owner_personal_phone,
+                f"'{raw}' doesn't look like a valid phone number. "
+                f"Use the full number with country code, e.g. resume +256700123456",
+                operator,
+            )
+            return
         session = await _resolve_handoff(
             operator, storage, messaging, target_phone
         )
@@ -92,6 +108,15 @@ async def _handle_control_command(
 
     elif text.startswith("handled"):
         target_phone = _parse_phone_arg(text, "handled")
+        if target_phone == _INVALID_PHONE:
+            raw = text[len("handled"):].strip()
+            await messaging.send_text(
+                operator.owner_personal_phone,
+                f"'{raw}' doesn't look like a valid phone number. "
+                f"Use the full number with country code, e.g. handled +256700123456",
+                operator,
+            )
+            return
         session = await _resolve_handoff(
             operator, storage, messaging, target_phone
         )
@@ -123,6 +148,11 @@ async def _handle_control_command(
     elif text.startswith("remove"):
         await _cmd_remove(text, operator, messaging, operator_adapter)
 
+    elif text.startswith("reply "):
+        await _cmd_reply(
+            original_text, operator, storage, messaging, rephrase_llm,
+        )
+
     elif text == "list excluded":
         phones = operator.excluded_phones or []
         msg_text = "Excluded numbers:\n" + "\n".join(f"  {p}" for p in phones) if phones else "No excluded numbers."
@@ -139,6 +169,7 @@ async def _handle_control_command(
             "Unrecognised command. Available:\n"
             "  resume {phone} — let the assistant continue\n"
             "  handled {phone} — you've taken care of it\n"
+            "  reply {phone} {text} — relay your response to the customer\n"
             "  exclude {phone} — block a number\n"
             "  include {phone} — allow a saved contact through\n"
             "  remove {phone} — undo exclude or include\n"
@@ -159,6 +190,15 @@ async def _cmd_exclude(
     operator_adapter: OperatorAdapter | None,
 ) -> None:
     phone = _parse_phone_arg(text, "exclude")
+    if phone == _INVALID_PHONE:
+        raw = text[len("exclude"):].strip()
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"'{raw}' doesn't look like a valid phone number. "
+            f"Use the full number with country code, e.g. exclude +256700123456",
+            operator,
+        )
+        return
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: exclude {phone}", operator)
         return
@@ -182,6 +222,15 @@ async def _cmd_include(
     operator_adapter: OperatorAdapter | None,
 ) -> None:
     phone = _parse_phone_arg(text, "include")
+    if phone == _INVALID_PHONE:
+        raw = text[len("include"):].strip()
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"'{raw}' doesn't look like a valid phone number. "
+            f"Use the full number with country code, e.g. include +256700123456",
+            operator,
+        )
+        return
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: include {phone}", operator)
         return
@@ -205,6 +254,15 @@ async def _cmd_remove(
     operator_adapter: OperatorAdapter | None,
 ) -> None:
     phone = _parse_phone_arg(text, "remove")
+    if phone == _INVALID_PHONE:
+        raw = text[len("remove"):].strip()
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"'{raw}' doesn't look like a valid phone number. "
+            f"Use the full number with country code, e.g. remove +256700123456",
+            operator,
+        )
+        return
     if not phone:
         await messaging.send_text(operator.owner_personal_phone, "Usage: remove {phone}", operator)
         return
@@ -232,12 +290,111 @@ async def _cmd_remove(
     log("exclusion_removed", operator_id=operator.operator_id, phone_hash=hash_for_log(phone))
 
 
+async def _cmd_reply(
+    original_text: str,
+    operator: Operator,
+    storage: StorageAdapter,
+    messaging: MessagingAdapter,
+    rephrase_llm: LLMAdapter | None,
+) -> None:
+    """Owner sends `reply {phone} {instruction}` on the control thread.
+    We find the target session, pass the instruction through the
+    haggling-relay function, which rephrases into customer voice and
+    sends it on the customer's thread.
+    """
+    # Strip the literal "reply " prefix (6 chars, case-insensitive)
+    remainder = original_text[6:].strip()
+    if not remainder:
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            "Usage: reply {phone} {your instruction to the customer}",
+            operator,
+        )
+        return
+
+    # Split phone from instruction. The phone token is the first whitespace-
+    # delimited piece; the rest is the free-form instruction.
+    parts = remainder.split(None, 1)
+    if len(parts) < 2:
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            "Usage: reply {phone} {your instruction}\n"
+            "Example: reply +256700123456 Sure, I can do 5% off that one.",
+            operator,
+        )
+        return
+
+    raw_phone, instruction = parts[0], parts[1].strip()
+    try:
+        target_phone = normalise(
+            raw_phone if raw_phone.startswith("+") else "+" + raw_phone
+        )
+    except ValueError:
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"'{raw_phone}' doesn't look like a valid phone number. "
+            f"Use the full number with country code, e.g. "
+            f"reply +256700123456 Your message here",
+            operator,
+        )
+        return
+
+    if not instruction:
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            "Please include your instruction after the phone number.",
+            operator,
+        )
+        return
+
+    session = storage.get(operator.operator_id, target_phone)
+    if session is None:
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"No conversation with {target_phone}.",
+            operator,
+        )
+        return
+
+    if rephrase_llm is None:
+        # Degraded path: forward verbatim rather than failing silently
+        try:
+            await messaging.send_text(target_phone, instruction, operator)
+        except Exception:
+            pass
+        await messaging.send_text(
+            operator.owner_personal_phone,
+            f"Sent your message to {target_phone} (verbatim — rephrase "
+            f"unavailable).",
+            operator,
+        )
+        return
+
+    async with _lock_for(operator.operator_id, target_phone):
+        await haggling_mod.relay_owner_instruction(
+            operator=operator,
+            session=session,
+            owner_instruction=instruction,
+            storage=storage,
+            messaging=messaging,
+            rephrase_llm=rephrase_llm,
+        )
+
+    log(
+        "owner_command",
+        operator_id=operator.operator_id,
+        command_type="reply",
+        phone_hash=hash_for_log(target_phone),
+    )
+
+
 # ── CASE B: passive interruption ─────────────────────────────────────────────
 
 async def _handle_passive_interruption(
     msg: dict,
     operator: Operator,
     storage: StorageAdapter,
+    messaging: MessagingAdapter | None = None,
 ) -> None:
     """Operator typed in a customer thread (from_me=true). Set OWNER_ACTIVE."""
     chat_id = msg.get("chat_id", "")
@@ -256,9 +413,23 @@ async def _handle_passive_interruption(
 
     # Bot-sent echoes are filtered in receiver.py via sent_tracker before
     # we reach here. If we're here, a human typed in the customer thread.
+    already_active = session.stage == Stage.OWNER_ACTIVE
     async with _lock_for(operator.operator_id, customer_phone):
         session.stage = Stage.OWNER_ACTIVE
         storage.set(operator.operator_id, customer_phone, session)
+
+    # Notify the owner on their control thread the first time they take
+    # over a given conversation. Don't re-notify on every message.
+    if messaging is not None and not already_active:
+        customer_label = session.name or customer_phone
+        note = (
+            f"Noted — you've taken over the chat with {customer_label}. "
+            f"I'll stay out of this one. Send 'resume {customer_phone}' "
+            f"here when you'd like me to pick it back up."
+        )
+        asyncio.create_task(
+            messaging.send_text(operator.owner_personal_phone, note, operator)
+        )
 
     log(
         "owner_typed_in_customer_thread",
@@ -321,12 +492,16 @@ async def _resolve_handoff(
     return None
 
 
+_INVALID_PHONE = "__INVALID__"
+
+
 def _parse_phone_arg(text: str, command: str) -> str | None:
     """Extract the optional phone argument after a command word.
 
     'resume +256700123456' → '+256700123456'
     'resume 256700123456'  → '+256700123456'
     'resume'               → None
+    'resume abc'            → _INVALID_PHONE sentinel
     """
     rest = text[len(command) :].strip()
     if not rest:
@@ -334,4 +509,4 @@ def _parse_phone_arg(text: str, command: str) -> str | None:
     try:
         return normalise(rest if rest.startswith("+") else "+" + rest)
     except ValueError:
-        return None
+        return _INVALID_PHONE

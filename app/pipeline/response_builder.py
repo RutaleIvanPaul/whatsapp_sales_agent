@@ -22,17 +22,22 @@ async def send_response(
 
     Text is sent synchronously (customer sees it immediately).
     Images are sent fire-and-forget so a broken URL doesn't block the reply.
+    Products here come from the LLM's explicit present_products call after
+    semantically reviewing search candidates — so we trust them directly.
     Long replies are split at the last "\n\n" before MAX_TEXT_CHARS.
     """
     if reply_text:
         for chunk in _split_text(reply_text, MAX_TEXT_CHARS):
             await messaging.send_text(phone, chunk, operator)
 
-    # Images fire-and-forget — don't block the pipeline timing
+    # Images fire-and-forget — don't block the pipeline timing.
+    # The LLM writes a short intro without naming products; the images with
+    # captions carry the full details. The LLM is responsible for issuing a
+    # narrow-enough search query so the top results are relevant.
     for product in products[:MAX_PRODUCT_IMAGES]:
         if not product.image_url:
             continue
-        caption = f"{product.name}\n{product.price}\n{product.description}"
+        caption = _build_caption(product)
         asyncio.create_task(_send_image_safe(messaging, phone, product, caption, operator))
 
 
@@ -53,6 +58,16 @@ async def _send_image_safe(
             error_type="image_send_failed",
             product_id=product.id,
         )
+
+
+def _build_caption(product: Product) -> str:
+    """Build a rich image caption with all product details."""
+    lines = [f"*{product.name}*", product.price]
+    if product.description:
+        lines.append(product.description)
+    if product.attributes:
+        lines.append(product.attributes)
+    return "\n".join(lines)
 
 
 def _split_text(text: str, limit: int) -> list[str]:

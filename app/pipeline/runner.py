@@ -124,29 +124,63 @@ async def run(
     t0 = _time.monotonic()
     lang = await language_mod.classify(unified, classifier_llm)
     language_ms = int((_time.monotonic() - t0) * 1000)
-    if lang in ("LUGANDA", "UNKNOWN"):
+    if lang == "LUGANDA":
+        # Legitimate non-English customer — reply with the operator's
+        # canned response and alert them.
         await _send_canned_and_alert(
             sender_phone, unified, lang, operator, messaging, phone_hash
         )
         return
+    if lang == "UNKNOWN":
+        # Gibberish / unidentifiable. Drop silently. We don't want to
+        # send the Luganda canned response to a keyboard-mashing
+        # message because it would imply we're processing real input.
+        log(
+            "pipeline_skipped",
+            reason="unknown_language",
+            phone_hash=phone_hash,
+            operator_id=operator.operator_id,
+        )
+        return
 
-    # 5. Intent gate — only for new/unknown contacts (no session or empty history)
+    # 5. Intent gate — 3-turn grace period for new contacts.
+    # Rationale: a fresh contact gets 3 replies to reveal whether they're
+    # a customer. If by the 4th message they've still shown no sales
+    # intent, silence them. Once sales intent is detected (or they pass
+    # 3 turns with sales signals), the gate is off for this session
+    # forever. See DECISIONS.md #16.
     intent_ms = 0
-    should_classify_intent = (session is None or not session.history)
-    if should_classify_intent:
+    gate_state = session.intent_gate_state if session else "unclassified"
+
+    if gate_state == "silenced":
+        log("intent_gate_silent", phone_hash=phone_hash, reason="already_silenced")
+        return
+
+    if gate_state == "unclassified":
+        # Count completed turns so far. Each turn = user + assistant = 2 entries.
+        completed_turns = (len(session.history) // 2) if session else 0
         t0 = _time.monotonic()
         intent = await intent_mod.classify_intent(unified, classifier_llm)
         intent_ms = int((_time.monotonic() - t0) * 1000)
-        if intent == "NOT_SALES":
+
+        if intent == "SALES":
+            # Lock in — gate never runs again for this session
+            if session is not None:
+                session.intent_gate_state = "passed"
+        elif completed_turns >= 3:
+            # 3 turns used up without sales intent — silence this session
+            if session is not None:
+                session.intent_gate_state = "silenced"
+                storage.set(operator.operator_id, sender_phone, session)
             log(
                 "intent_gate_silent",
                 phone_hash=phone_hash,
                 operator_id=operator.operator_id,
+                reason="no_sales_after_3_turns",
                 chars=len(unified),
             )
-            # TODO: operator alert for high-signal non-sales messages
-            # Deferred — needs real usage data to define "important"
-            return  # Silent. No reply. No session update.
+            return
+        # else: NOT_SALES but still within grace period → reply anyway
 
     # 6. Create session if new
     if session is None:

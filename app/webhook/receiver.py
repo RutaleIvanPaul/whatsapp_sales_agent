@@ -10,6 +10,7 @@ from app.utils.crypto import decrypt
 from app.utils.log import log
 from app.utils.phone import from_whapi, hash_for_log
 from app.utils.sent_tracker import sent_tracker
+from app.operator_registry import ensure_registered
 from app.webhook import owner_action_handler, session_disconnect_handler
 
 router = APIRouter()
@@ -49,8 +50,10 @@ async def receive(request: Request) -> Response:
         if not channel_id:
             return Response(status_code=200)
 
-        # Step 3: look up operator by channel_id
-        operator = state.operators_by_channel_id.get(channel_id)
+        # Step 3: look up operator by channel_id. Lazy-load from DB if not
+        # yet in memory — supports onboarding new operators without a
+        # server restart (production multi-tenant pattern).
+        operator = await ensure_registered(state, channel_id)
         if operator is None:
             # Do NOT reveal channel existence
             return Response(status_code=200)
@@ -145,6 +148,7 @@ async def receive(request: Request) -> Response:
                     owner_action_handler.handle(
                         payload, operator, state.storage_adapter,
                         state.messaging_adapter, state.operator_adapter,
+                        state.classifier_llm,
                     )
                 )
                 continue
@@ -188,6 +192,7 @@ async def receive(request: Request) -> Response:
                     owner_action_handler.handle(
                         payload, operator, state.storage_adapter,
                         state.messaging_adapter, state.operator_adapter,
+                        state.classifier_llm,
                     )
                 )
                 continue

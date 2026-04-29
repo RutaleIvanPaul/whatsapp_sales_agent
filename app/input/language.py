@@ -73,8 +73,16 @@ async def classify(text: str, llm: LLMAdapter) -> str:
 
     # ── Stage 2: LLM classifier (ambiguous messages only) ────────────
     user_prompt = (
-        "Classify the language of this message. "
-        "Reply with exactly one of: ENGLISH, LUGANDA, MIXED, UNKNOWN.\n"
+        "Classify the language of this message.\n"
+        "  - ENGLISH: standard English\n"
+        "  - LUGANDA: Luganda (a Bantu language of Uganda with recognisable "
+        "Luganda words like 'webale', 'gyendi', 'nnyabo', etc.)\n"
+        "  - MIXED: clearly contains both English and Luganda words\n"
+        "  - UNKNOWN: gibberish, keyboard mashing, single nonsense token, "
+        "or a language you cannot identify. If the message is just random "
+        "characters with no recognisable words in any language, choose "
+        "UNKNOWN. Do not default to LUGANDA when unsure.\n"
+        "Reply with exactly one word.\n"
         f"{CUSTOMER_BLOCK_OPEN}\n{text}\n{CUSTOMER_BLOCK_CLOSE}"
     )
 

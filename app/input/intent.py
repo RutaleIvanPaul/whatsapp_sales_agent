@@ -67,9 +67,12 @@ async def classify_intent(text: str, classifier_llm: LLMAdapter) -> str:
 
     # ── Stage 2: LLM classifier (ambiguous messages only) ────────────
     user_prompt = (
-        "Classify whether this message is from someone interested in "
-        "buying products from a shop, or is a non-sales message "
-        "(wrong number, personal, spam, etc). Reply: SALES or NOT_SALES.\n"
+        "You screen incoming WhatsApp messages to a shop. Reply SALES for "
+        "greetings, product enquiries, or anything that could plausibly be "
+        "a customer. Reply NOT_SALES only for clear wrong numbers, "
+        "personal messages meant for someone else, or obvious spam. When "
+        "in doubt, choose SALES.\n"
+        "Reply with exactly one word: SALES or NOT_SALES.\n"
         f"{CUSTOMER_BLOCK_OPEN}\n{text}\n{CUSTOMER_BLOCK_CLOSE}"
     )
 

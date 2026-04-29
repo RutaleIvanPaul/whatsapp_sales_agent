@@ -17,3 +17,19 @@ class MessagingAdapter(ABC):
     async def send_image(
         self, phone: str, image_url: str, caption: str, operator: Operator
     ) -> None: ...
+
+    @abstractmethod
+    async def check_health(self, operator: Operator) -> dict:
+        """Check provider session health.
+
+        Returns a dict with at minimum:
+            connected: bool
+            status_text: str (human-readable status description)
+        Provider implementations may include extra fields.
+        """
+        ...
+
+    @abstractmethod
+    async def get_contacts(self, operator: Operator) -> set[str]:
+        """Fetch the operator's saved contacts as a set of +E.164 phones."""
+        ...

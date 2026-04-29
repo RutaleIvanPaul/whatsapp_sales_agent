@@ -16,11 +16,36 @@ from app.models.product import Product
 from app.models.session import Session, Stage
 from app.utils.log import log
 
-MAX_TOOL_ROUNDS = 5
+MAX_TOOL_ROUNDS = 8
 TIMEOUT_RETRY_WAITS = [3, 5]  # seconds to wait between attempts 1→2, 2→3
 FALLBACK_GENERIC_REPLY = (
     "Sorry — I had trouble processing that. Could you try rephrasing?"
 )
+
+
+def _looks_malformed(text: str) -> bool:
+    """Catch obvious LLM output corruption like 'Let's let … we … ... …'.
+
+    Only flag clearly-broken output — fragmented ellipses, mostly-
+    punctuation, or impossibly short. Valid short human replies like
+    "Sure thing!" or "Got it — sending now." must pass.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) < 4:
+        return True
+    # Multiple ellipsis or trailing-off patterns strongly suggest a
+    # fragmented generation that was abandoned mid-thought.
+    ellipsis_count = stripped.count("…") + stripped.count("...")
+    if ellipsis_count >= 2:
+        return True
+    # Ratio of letters to non-letters — if a reply is mostly dots,
+    # ellipses, asterisks, it's malformed.
+    letters = sum(1 for c in stripped if c.isalpha())
+    if letters == 0 or letters / max(len(stripped), 1) < 0.4:
+        return True
+    return False
 
 
 async def run(
@@ -39,7 +64,15 @@ async def run(
     Returns (reply_text, products_to_show). Persists the session before
     returning. Never raises — on LLM failure returns a safe fallback reply.
     """
-    products_shown_this_turn: list[Product] = []
+    # products_to_present is populated ONLY by the LLM's present_products
+    # tool call after it semantically reviews search results.
+    products_to_present: list[Product] = []
+    # Candidates from the most recent search_products call — used to
+    # validate that present_products only references real search results.
+    last_search_candidates: list[Product] = []
+    # Track search queries already issued this turn to break loops where
+    # the LLM keeps re-searching instead of presenting.
+    seen_search_queries: set[str] = set()
 
     # Build system prompt — persona + rules + session context (no customer text)
     products_shown_names = _shown_names_from_session(session, inventory)
@@ -58,7 +91,7 @@ async def run(
         response = await _llm_call_with_retry(
             llm, messages, tools_mod.ALL_TOOLS, system,
             operator, session, storage, messaging, unified_text,
-            products_shown_this_turn, max_history_turns, round_idx,
+            products_to_present, max_history_turns, round_idx,
         )
         if response is None:
             # All retries exhausted — _llm_call_with_retry already
@@ -69,9 +102,16 @@ async def run(
 
         if not response.tool_calls:
             reply = response.text or FALLBACK_GENERIC_REPLY
+            if _looks_malformed(reply):
+                log(
+                    "llm_malformed_reply",
+                    operator_id=operator.operator_id,
+                    preview=reply[:80],
+                )
+                reply = FALLBACK_GENERIC_REPLY
             return _persist_and_return(
                 session, storage, operator, unified_text,
-                reply, products_shown_this_turn, max_history_turns,
+                reply, products_to_present, max_history_turns,
             )
 
         # Append the assistant message verbatim — adapter-shaped, preserves
@@ -90,7 +130,9 @@ async def run(
             try:
                 result_str = await _dispatch_tool(
                     tc, session, operator, inventory, unified_text,
-                    products_shown_this_turn, messaging, storage,
+                    products_to_present, last_search_candidates,
+                    seen_search_queries,
+                    messaging, storage,
                 )
             except Exception as e:
                 log(
@@ -122,7 +164,7 @@ async def run(
     if has_text:
         return _persist_and_return(
             session, storage, operator, unified_text,
-            last_response.text, products_shown_this_turn, max_history_turns,
+            last_response.text, products_to_present, max_history_turns,
         )
     # No text at all — silence + HANDED_OFF + operator alert
     await _handle_fatal_failure(
@@ -278,7 +320,9 @@ async def _dispatch_tool(
     operator: Operator,
     inventory: InventoryAdapter,
     unified_text: str,
-    products_shown_this_turn: list[Product],
+    products_to_present: list[Product],
+    last_search_candidates: list[Product],
+    seen_search_queries: set[str],
     messaging: MessagingAdapter,
     storage: StorageAdapter,
 ) -> str:
@@ -286,13 +330,46 @@ async def _dispatch_tool(
     args = tc.get("input") or {}
 
     if name == "search_products":
+        query = (args.get("query") or "").strip()
+        normalised = query.lower()
+        # Break loops: if the LLM repeats a query it already ran this
+        # turn, refuse the repeat and push it toward a decision.
+        if normalised and normalised in seen_search_queries:
+            log(
+                "search_query_repeat_blocked",
+                operator_id=operator.operator_id,
+                query=normalised[:80],
+            )
+            import json as _json
+            return _json.dumps({
+                "error": "duplicate_query",
+                "note": (
+                    "You already ran this exact search this turn. Do NOT "
+                    "search again with the same query. Either call "
+                    "present_products on the existing candidates, write "
+                    "a text reply to the customer, or issue a different "
+                    "query."
+                ),
+            })
+        if normalised:
+            seen_search_queries.add(normalised)
         result_str, products = tools_mod.handle_search_products(
-            args.get("query", ""), session, inventory
+            query, session, inventory
         )
-        # Track products for response_builder (max 3 shown to customer)
-        for p in products:
-            if p.id not in [x.id for x in products_shown_this_turn]:
-                products_shown_this_turn.append(p)
+        # Replace candidate pool — only the latest search's results are
+        # valid targets for present_products.
+        last_search_candidates.clear()
+        last_search_candidates.extend(products)
+        return result_str
+
+    if name == "present_products":
+        result_str, selected = tools_mod.handle_present_products(
+            args.get("product_ids", []), session, last_search_candidates,
+        )
+        # Replace presentation list. If the LLM calls present_products
+        # more than once in a turn, each call overrides the previous.
+        products_to_present.clear()
+        products_to_present.extend(selected)
         return result_str
 
     if name == "update_session":
@@ -302,6 +379,13 @@ async def _dispatch_tool(
         return await tools_mod.handle_trigger_handoff(
             args.get("summary", ""), session, operator, messaging,
             storage, inventory, unified_text
+        )
+
+    if name == "request_haggle_approval":
+        return await tools_mod.handle_request_haggle_approval(
+            args.get("customer_ask", ""),
+            args.get("product_ids", []),
+            session, operator, messaging, storage, inventory, unified_text,
         )
 
     return f"Unknown tool: {name}"
