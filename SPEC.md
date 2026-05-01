@@ -686,9 +686,9 @@ sheets.py — Google Sheets loader:
     429 (rate limit) and 5xx (server error): exponential backoff 1s, 2s, 4s
     Max 3 retries. On persistent failure: keep stale cache, log error.
 
-cache.py — in-memory index:
-  Maintains search index in memory.
-  Uses asyncio.Lock (single lock — acquire for both reads and writes,
+cache.py — in-memory index with hybrid semantic + fuzzy search:
+  Maintains search index in memory with RapidFuzz and optional embeddings.
+  Uses threading.Lock (single lock — acquire for both reads and writes,
   write is fast so shared read lock is not needed at MVP scale).
 
   Index build:
@@ -696,25 +696,78 @@ cache.py — in-memory index:
       index_str = f"{product.name} {product.keywords} "
                   f"{product.description} {product.attributes or ''}".lower()
       Store: list of (index_str, Product) tuples
+    
+    If semantic search enabled (models ready):
+      Embed all index_str using all-MiniLM-L6-v2 (text) → (N, 384) matrix
+      Embed all index_str using CLIP clip-ViT-B-32 (image) → (N, 512) matrix
+      Store both matrices with lock
 
   Background refresh:
     asyncio task, runs every INVENTORY_REFRESH_INTERVAL_S (default 300)
-    Acquires lock, rebuilds index, releases lock
+    Rebuilds both RapidFuzz index and embedding matrices if models ready
+    Logs: inventory_refreshed, embedding_index_built
 
   search(query, shown_ids):
     Acquire lock
-    Build sub-queries: the full query, plus all consecutive word pairs
-    (bigrams) if the query has 3+ words. Vision descriptions produce
-    verbose queries that score low as a whole but contain strong 2-word
-    fragments. See DECISIONS.md for the rationale.
-    For each sub-query, for each (index_str, product) in index:
-      score = rapidfuzz.fuzz.partial_ratio(sub_query, index_str)
-      if score >= SEARCH_THRESHOLD and product.available
-         and product.id not in shown_ids:
-        add to results
-    Sort by score descending
-    Return top 5
+    Step 1: RapidFuzz scoring (always runs, instant)
+      Build sub-queries: the full query, plus all consecutive word pairs
+      (bigrams) if the query has 3+ words. Vision descriptions produce
+      verbose queries that score low as a whole but contain strong 2-word
+      fragments. See DECISIONS.md for the rationale.
+      For each sub-query, for each (index_str, product) in index:
+        score = rapidfuzz.fuzz.partial_ratio(sub_query, index_str)
+      Return max(word_coverage, full_score) per product
+    
+    Step 2: Semantic scoring (runs when EmbeddingModels.is_ready())
+      Detect image query by "[image:" prefix (prepended by vision handler)
+      Text queries:    embed with all-MiniLM-L6-v2, cosine sim vs text matrix
+      Image queries:   embed with CLIP text encoder, cosine sim vs CLIP matrix
+      Return (N,) array of cosine similarities in [-1, 1]
+    
+    Step 3: Score fusion
+      fuzzy_norm = fuzzy_scores / 100.0
+      If semantic_scores available:
+        combined = (SEMANTIC_WEIGHT × semantic) + ((1-SEMANTIC_WEIGHT) × fuzzy_norm)
+      Else:
+        combined = fuzzy_norm
+    
+    Step 4: Filter and rank
+      Filter: available=True, id not in shown_ids
+      Qualify: (fuzzy_score >= SEARCH_THRESHOLD) OR (semantic_score >= 0.25)
+      Sort: combined score descending
+      Return top MAX_CANDIDATES (default 10)
+    
     Release lock
+    Log: inventory_search with semantic_active flag
+
+  SEMANTIC_WEIGHT (env var, default 0.6):
+    0.0  = pure RapidFuzz (ignores embeddings)
+    0.6  = weighted blend (default: semantic drives, fuzzy catches misses)
+    1.0  = pure semantic (embeddings only)
+
+  Fallback:
+    If SEMANTIC_SEARCH_ENABLED=false: embeddings not loaded, pure RapidFuzz
+    If models loading: system runs RapidFuzz-only until models ready
+    Until models ready: semantic_active=false in logs
+
+embeddings.py — embedding model wrapper (Phase 8):
+  Two local models loaded async in background thread:
+    all-MiniLM-L6-v2 (90MB)  → 384-dim text embeddings
+    clip-ViT-B-32 (350MB)    → 512-dim image+text embeddings
+  
+  Models download once (~440MB) and cache in ~/.cache/torch/sentence_transformers/
+  Subsequent starts load from cache in ~2-5 seconds.
+  
+  Loading is non-blocking: server starts while models load in background.
+  is_ready() returns true when both models loaded and ready to embed.
+  
+  Methods:
+    embed_text(text)             → (384,) normalized float32 array
+    embed_image_query(query)     → (512,) normalized float32 array
+    embed_products_text(texts)   → (N, 384) batch embeddings
+    embed_products_clip(texts)   → (N, 512) batch embeddings
+  
+  All return None on error (non-fatal — system falls back to fuzzy search).
 
 ---
 

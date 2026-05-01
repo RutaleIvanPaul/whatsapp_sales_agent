@@ -562,3 +562,54 @@ operators instead of crashing.
 - Queue lost on process restart. Documented in S24. Redis swap planned.
 
 **Date:** Phase 6 hardening (April 2026)
+
+---
+
+## 9. Hybrid semantic + fuzzy search (Phase 8)
+
+**Decision:** InventoryCache.search() uses a two-model hybrid:
+- RapidFuzz partial ratio matching (instant, zero RAM cost)
+- Sentence-transformers embeddings (all-MiniLM-L6-v2 for text,
+  CLIP clip-ViT-B-32 for image-derived queries)
+- Score fusion: combined = (semantic_weight × semantic) + ((1-semantic_weight) × fuzzy)
+- SEMANTIC_WEIGHT env var (default 0.6) controls the blend
+- Models load async on startup; system falls back to fuzzy-only until ready
+
+**Why hybrid, not pure semantic:**
+RapidFuzz is instant (no model inference), has zero RAM cost, and handles
+exact product name / model number matches better than semantic models
+(which look for conceptual similarity). Pure semantic search would regress
+on specific keyword queries like "iPhone 15 case" or "Adidas Air Force 1".
+The hybrid preserves RapidFuzz strengths while adding semantic recall for
+vague queries ("something casual for the office") and image descriptions.
+
+**Why local models, not an API:**
+- No API cost (free models, CPU inference)
+- No rate limits
+- No latency from external service calls
+- No dependency on third-party uptime
+- Models fit on any VPS with 1GB RAM (total: ~440MB for both models)
+- First download ~440MB; subsequent starts use local cache (~2-5 seconds)
+
+**Model choices:**
+
+all-MiniLM-L6-v2 (90MB, 384-dim):
+- Best-in-class performance/size ratio for short text similarity
+- Outperforms larger models on product name and description matching
+- Fast inference (<1ms per query on CPU)
+
+clip-ViT-B-32 (350MB, 512-dim):
+- CLIP shares a vector space between text and image encodings
+- A text description of an image and an actual product photo embedding
+  are directly comparable
+- Foundation for Phase 9 (real image-to-image search without architecture change)
+
+**Fallback:** SEMANTIC_SEARCH_ENABLED=false disables entirely. Models load
+async so server startup is never blocked. Until models ready, system runs
+pure RapidFuzz (identical to Phase 2-7).
+
+**Memory:** Minimum 1GB RAM with semantic search. Minimum 256MB without.
+Both fit on free-tier VPS instances (Railway, Render, etc.).
+
+**Date:** Phase 8 semantic search (April 2026)
+

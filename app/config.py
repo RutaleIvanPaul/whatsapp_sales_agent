@@ -47,6 +47,10 @@ class Config:
     # Server URL (for webhook config in onboarding)
     server_url: str
 
+    # Semantic search (Phase 8)
+    semantic_search_enabled: bool = True
+    semantic_weight: float = 0.6
+
 
 def validate() -> Config:
     """Load and validate all env vars. Collects ALL errors before exiting."""
@@ -155,6 +159,18 @@ def validate() -> Config:
 
     server_url = os.getenv("SERVER_URL", "")
 
+    # ── Semantic search configuration ────────────────────────────────
+    semantic_search_enabled = os.getenv("SEMANTIC_SEARCH_ENABLED", "true").lower() != "false"
+    semantic_weight_raw = os.getenv("SEMANTIC_WEIGHT", "0.6")
+    semantic_weight = 0.6
+    try:
+        semantic_weight = float(semantic_weight_raw)
+        if not 0.0 <= semantic_weight <= 1.0:
+            raise ValueError(f"out of range")
+    except ValueError:
+        errors.append(f"SEMANTIC_WEIGHT must be a float between 0.0 and 1.0, got: {semantic_weight_raw}")
+        semantic_weight = 0.6
+
     # ── Report errors ────────────────────────────────────────────────
     if errors:
         print("FATAL: Configuration errors:", file=sys.stderr)
@@ -201,6 +217,8 @@ def validate() -> Config:
         input_token_rate_per_1k=input_token_rate,
         output_token_rate_per_1k=output_token_rate,
         server_url=server_url,
+        semantic_search_enabled=semantic_search_enabled,
+        semantic_weight=semantic_weight,
     )
 
 
