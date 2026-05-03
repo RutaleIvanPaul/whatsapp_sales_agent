@@ -1,0 +1,73 @@
+INFO:     Will watch for changes in these directories: ['/Users/ivanpaul/DATA/agents/whatsapp_sales_agent']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [3324] using WatchFiles
+/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/google/oauth2/__init__.py:40: FutureWarning: You are using a Python version 3.9 past its end of life. Google will update google-auth with critical bug fixes on a best-effort basis, but not with any other fixes or features. Please upgrade your Python version, and then update google-auth.
+  warnings.warn(eol_message.format("3.9"), FutureWarning)
+/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/google/auth/__init__.py:54: FutureWarning: You are using a Python version 3.9 past its end of life. Google will update google-auth with critical bug fixes on a best-effort basis, but not with any other fixes or features. Please upgrade your Python version, and then update google-auth.
+  warnings.warn(eol_message.format("3.9"), FutureWarning)
+/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.api_core supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.api_core.
+  warnings.warn(message, FutureWarning)
+INFO:     Started server process [3331]
+INFO:     Waiting for application startup.
+{"ts": "2026-04-29T12:25:12.191259+00:00", "event": "config_validated", "storage_url": "sqlite:///salelular.db", "llm_provider": "groq", "llm_model": "openai/gpt-oss-120b", "llm_api_key": "gsk_***", "encryption_key": "weAy***"}
+{"ts": "2026-04-29T12:25:12.191821+00:00", "event": "startup", "phase": "config_loaded"}
+{"ts": "2026-04-29T12:25:12.192057+00:00", "event": "semantic_search_enabled", "weight": 0.6}
+{"ts": "2026-04-29T12:25:12.223957+00:00", "event": "startup", "phase": "operators_loaded", "operator_count": 0}
+{"ts": "2026-04-29T12:25:12.224050+00:00", "event": "error", "component": "main", "error_type": "no_active_operators", "message": "No active operators found. Run scripts/check_session.py --create-test-operator."}
+{"ts": "2026-04-29T12:25:12.224932+00:00", "event": "startup", "phase": "storage_ready"}
+{"ts": "2026-04-29T12:25:12.224999+00:00", "event": "startup", "phase": "messaging_ready"}
+/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+{"ts": "2026-04-29T12:25:12.630598+00:00", "event": "startup", "phase": "llm_ready", "llm_provider": "groq", "llm_model": "openai/gpt-oss-120b", "classifier_model": "llama-3.1-8b-instant", "vision_provider": "groq", "vision_model": "meta-llama/llama-4-scout-17b-16e-instruct"}
+{"ts": "2026-04-29T12:25:12.630712+00:00", "event": "startup", "phase": "contacts_loaded"}
+{"ts": "2026-04-29T12:25:12.630796+00:00", "event": "startup", "phase": "worker_started"}
+{"ts": "2026-04-29T12:25:12.630845+00:00", "event": "startup", "phase": "health_monitor_started", "interval_s": 1800}
+{"ts": "2026-04-29T12:25:12.630886+00:00", "event": "startup", "phase": "ready", "port": 8000}
+INFO:     Application startup complete.
+
+A module that was compiled using NumPy 1.x cannot be run in
+NumPy 2.0.2 as it may crash. To support both 1.x and 2.x
+versions of NumPy, modules must be compiled with NumPy 2.0.
+Some module may need to rebuild instead e.g. with 'pybind11>=2.12'.
+
+If you are a user of the module, the easiest solution will be to
+downgrade to 'numpy<2' or try to upgrade the affected module.
+We expect that some modules will need time to support NumPy 2.
+
+Traceback (most recent call last):  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/threading.py", line 930, in _bootstrap
+    self._bootstrap_inner()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/threading.py", line 973, in _bootstrap_inner
+    self.run()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/threading.py", line 910, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/app/adapters/inventory/embeddings.py", line 57, in _load
+    from sentence_transformers import SentenceTransformer
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/sentence_transformers/__init__.py", line 10, in <module>
+    from sentence_transformers.backend import (
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/sentence_transformers/backend/__init__.py", line 3, in <module>
+    from .load import load_onnx_model, load_openvino_model
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/sentence_transformers/backend/load.py", line 7, in <module>
+    from transformers.configuration_utils import PretrainedConfig
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/transformers/__init__.py", line 27, in <module>
+    from . import dependency_versions_check
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/transformers/dependency_versions_check.py", line 16, in <module>
+    from .utils.versions import require_version, require_version_core
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/transformers/utils/__init__.py", line 24, in <module>
+    from .auto_docstring import (
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/transformers/utils/auto_docstring.py", line 30, in <module>
+    from .generic import ModelOutput
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/transformers/utils/generic.py", line 51, in <module>
+    import torch
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/torch/__init__.py", line 1477, in <module>
+    from .functional import *  # noqa: F403
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/torch/functional.py", line 9, in <module>
+    import torch.nn.functional as F
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/torch/nn/__init__.py", line 1, in <module>
+    from .modules import *  # noqa: F403
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/torch/nn/modules/__init__.py", line 35, in <module>
+    from .transformer import TransformerEncoder, TransformerDecoder, \
+  File "/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/torch/nn/modules/transformer.py", line 20, in <module>
+    device: torch.device = torch.device(torch._C._get_default_device()),  # torch.device('cpu'),
+/Users/ivanpaul/DATA/agents/whatsapp_sales_agent/venv/lib/python3.9/site-packages/torch/nn/modules/transformer.py:20: UserWarning: Failed to initialize NumPy: _ARRAY_API not found (Triggered internally at /Users/runner/work/pytorch/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  device: torch.device = torch.device(torch._C._get_default_device()),  # torch.device('cpu'),
+{"ts": "2026-04-29T12:26:43.349043+00:00", "event": "embedding_models_loading", "text_model": "all-MiniLM-L6-v2", "clip_model": "clip-ViT-B-32"}

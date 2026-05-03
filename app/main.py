@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.adapters.inventory.cache import InventoryCache
+from app.adapters.inventory.embeddings import EmbeddingModels
 from app.adapters.inventory.sheets import GoogleSheetsLoader, SheetsLoadError
 from app.adapters.llm import factory as llm_factory
 from app.adapters.messaging.whapi import WhapiMessagingAdapter
@@ -69,6 +70,15 @@ async def lifespan(app: FastAPI):
     cfg = validate()
     log("startup", phase="config_loaded")
 
+    # --- Step 2b: embedding models (Phase 8 semantic search) ---
+    embedding_models: EmbeddingModels | None = None
+    if cfg.semantic_search_enabled:
+        embedding_models = EmbeddingModels()
+        embedding_models.load_async()
+        log("semantic_search_enabled", weight=cfg.semantic_weight)
+    else:
+        log("semantic_search_disabled")
+
     # --- Step 2: operator adapter + load active operators ---
     operator_adapter = SqliteOperatorAdapter(cfg.storage_db_path, cfg.encryption_key)
     operators: list[Operator] = operator_adapter.get_all_active()
@@ -98,7 +108,11 @@ async def lifespan(app: FastAPI):
                 op.google_sheets_id or cfg.google_sheets_id,
                 op.google_sheet_name,
             )
-            cache = InventoryCache(search_threshold=cfg.search_threshold)
+            cache = InventoryCache(
+                search_threshold=cfg.search_threshold,
+                semantic_weight=cfg.semantic_weight,
+                embedding_models=embedding_models,
+            )
             try:
                 products = await loader.load()
                 cache.build_index(products)
